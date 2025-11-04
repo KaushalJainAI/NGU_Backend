@@ -10,4 +10,4 @@ python-decouple
 psycopg2-binary
 drf-spectacular
 celery
-redis
+django_redis
