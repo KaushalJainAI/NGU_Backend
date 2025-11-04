@@ -1,0 +1,13 @@
+django
+djangorestframework
+djangorestframework-simplejwt
+django-cors-headers
+pillow
+django-filter
+stripe
+razorpay
+python-decouple
+psycopg2-binary
+drf-spectacular
+celery
+redis

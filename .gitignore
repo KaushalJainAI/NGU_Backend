@@ -1,0 +1,80 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.envrc
+.venv/
+
+# Django specific files
+*.sqlite3
+db.sqlite3
+
+# Media files (uploaded media)
+/media/
+# If media is stored outside project folder, add its path explicitly
+
+# Static files
+/static/
+# If static files are collected into a specific folder, ignore that as well
+
+# Django migrations
+*/migrations/*.py
+*/migrations/*.pyc
+
+# OS and system files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDEs and editors
+.vscode/
+.idea/
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Python cache and egg files
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+
+# Logs and runtime files
+*.log
+*.pid
+*.local
+
+# Environment variable files
+.env
+.envrc
+
+# Coverage reports
+htmlcov/
+.coverage
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Editor temporary files
+*~
+# Vim swap files
+.swp
+.swo
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Docker-related files (if used)
+Dockerfile
+docker-compose.yml
+
