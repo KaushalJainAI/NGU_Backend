@@ -28,7 +28,15 @@ class ProductListSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'slug', 'category', 'category_name', 'spice_form', 
                   'price', 'discount_price', 'final_price', 'discount_percentage', 
                   'stock', 'in_stock', 'weight', 'organic', 'image', 'is_featured', 
-                  'average_rating', 'created_at']
+                  'average_rating', 'created_at', 'badge']
+        
+    def get_badge(self, obj):
+        if obj.is_featured:
+            return 'Featured'
+        elif obj.in_stock:
+            return 'In Stock'
+        else:
+            return 'Out of Stock'
 
 class ProductDetailSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)

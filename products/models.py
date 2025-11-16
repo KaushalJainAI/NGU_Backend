@@ -33,7 +33,7 @@ class Product(models.Model):
         ('crushed', 'Crushed'),
         ('mixed', 'Mixed/Blend'),
     ]
-
+    id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True, blank=True)
     category = models.ForeignKey(
@@ -88,6 +88,7 @@ class Product(models.Model):
     # Flags
     is_active = models.BooleanField(default=True)
     is_featured = models.BooleanField(default=False)
+    badge = models.CharField(max_length=20, blank=True)
     
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)

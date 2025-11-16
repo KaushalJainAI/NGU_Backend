@@ -49,3 +49,13 @@ class CartItem(models.Model):
     def subtotal(self):
         """Calculate subtotal for this cart item"""
         return self.product.final_price * self.quantity
+    
+class Favorite(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='favorites')
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'product')
+
+

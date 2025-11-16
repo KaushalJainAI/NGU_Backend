@@ -22,9 +22,9 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
-from users.views import UserRegistrationView, UserProfileView, CustomTokenObtainPairView
+from users.views import UserRegistrationView, UserProfileView, CustomTokenObtainPairView, PaymentMethodViewSet, ChangePasswordView
 from products.views import CategoryViewSet, ProductViewSet
-from cart.views import CartViewSet
+from cart.views import CartViewSet, FavoritesViewSet
 from orders.views import OrderViewSet
 from reviews.views import ReviewViewSet
 
@@ -34,6 +34,11 @@ router.register(r'products', ProductViewSet, basename='product')
 router.register(r'cart', CartViewSet, basename='cart')
 router.register(r'orders', OrderViewSet, basename='order')
 router.register(r'reviews', ReviewViewSet, basename='review')
+# router.register(r'favorites', FavoritesViewSet , basename='favorite')
+router.register(r'payment-methods', PaymentMethodViewSet, basename='payment-method')
+
+
+
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -46,7 +51,8 @@ urlpatterns = [
     path('api/auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/auth/profile/', UserProfileView.as_view(), name='profile'),
-    
+    path('api/auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
