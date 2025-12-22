@@ -1,19 +1,3 @@
-"""
-URL configuration for spices_backend project.
-
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/4.2/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
-"""
 from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
@@ -22,30 +6,40 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
-from users.views import UserRegistrationView, UserProfileView, CustomTokenObtainPairView, PaymentMethodViewSet, ChangePasswordView
-from products.views import CategoryViewSet, ProductViewSet
-from cart.views import CartViewSet, FavoritesViewSet
+from users.views import (
+    UserRegistrationView, UserProfileView, CustomTokenObtainPairView, ChangePasswordView
+)
+from products.views import (
+    CategoryViewSet, ProductViewSet, ComboProductViewSet, ProductImageViewSet, get_spice_forms
+)
+from cart.views import CartViewSet, ValidateCouponAPIView
 from orders.views import OrderViewSet
 from reviews.views import ReviewViewSet
+from payments.views import PaymentMethodViewSet
+from admin_panel.views import ReceivableAccountViewSet, DashboardViewSet, CouponViewSet, PolicyViewSet
 
 router = DefaultRouter()
-router.register(r'categories', CategoryViewSet, basename='category')
-router.register(r'products', ProductViewSet, basename='product')
+router.register(r'categories', CategoryViewSet, basename='categories')
+router.register(r'products', ProductViewSet, basename='products')
+router.register(r'combos', ComboProductViewSet, basename='combos')
 router.register(r'cart', CartViewSet, basename='cart')
-router.register(r'orders', OrderViewSet, basename='order')
-router.register(r'reviews', ReviewViewSet, basename='review')
-# router.register(r'favorites', FavoritesViewSet , basename='favorite')
-router.register(r'payment-methods', PaymentMethodViewSet, basename='payment-method')
+router.register(r'orders', OrderViewSet, basename='orders')
+router.register(r'reviews', ReviewViewSet, basename='reviews')
+router.register(r'payment-methods', PaymentMethodViewSet, basename='payment-methods')
+router.register(r'receivable-accounts', ReceivableAccountViewSet, basename='receivable-accounts')
+router.register(r'product-images', ProductImageViewSet, basename='product-image')
+router.register(r'coupons', CouponViewSet, basename='coupon')
 
-
+router.register(r'policies', PolicyViewSet, basename='policy')
+router.register(r'dashboard', DashboardViewSet, basename='dashboard')
 
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    
-    # API endpoints
+
+    # Main API endpoints
     path('api/', include(router.urls)),
-    
+
     # Authentication endpoints
     path('api/auth/register/', UserRegistrationView.as_view(), name='register'),
     path('api/auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
@@ -53,9 +47,14 @@ urlpatterns = [
     path('api/auth/profile/', UserProfileView.as_view(), name='profile'),
     path('api/auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
 
+    # Coupon validation endpoint
+    path('api/auth/validate-coupon/', ValidateCouponAPIView.as_view(), name='validate-coupon'),
+
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+
+     path('api/spice-forms/', get_spice_forms, name='spice-forms'),
 ]
 
 if settings.DEBUG:

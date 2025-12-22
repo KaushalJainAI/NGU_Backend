@@ -1,10 +1,12 @@
 from django.db import models
 from django.conf import settings
 from products.models import Product
+from admin_panel.models import Coupon  # Add this import
 import uuid
 
+
 class Order(models.Model):
-    """Order Model"""
+    """Order Model with Coupon Support"""
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('confirmed', 'Confirmed'),
@@ -12,10 +14,12 @@ class Order(models.Model):
         ('shipped', 'Shipped'),
         ('delivered', 'Delivered'),
         ('cancelled', 'Cancelled'),
+        ('delivering', 'Delivering')
     ]
 
     PAYMENT_METHOD_CHOICES = [
-        ('cod', 'Cash on Delivery'),
+        ('COD', 'Cash on Delivery'),
+        ('ONLINE', 'Online Payment'),
         ('stripe', 'Stripe'),
         ('razorpay', 'Razorpay'),
     ]
@@ -25,21 +29,22 @@ class Order(models.Model):
     
     # Shipping Details
     shipping_address = models.TextField()
-    shipping_city = models.CharField(max_length=100)
-    shipping_state = models.CharField(max_length=100)
-    shipping_pincode = models.CharField(max_length=10)
-    phone = models.CharField(max_length=15)
+    phone_number = models.CharField(max_length=15)  # Renamed for consistency with API
     
     # Order Details
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES)
     payment_status = models.CharField(max_length=20, default='pending')
     
-    # Pricing
-    subtotal = models.DecimalField(max_digits=10, decimal_places=2)
+    # Pricing (with discount support)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, help_text="Original subtotal before discount")
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Total discount applied")
     shipping_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    tax = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    tax = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Tax calculated on discounted amount")
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text="Final amount to pay")
+    
+    # Coupon
+    coupon = models.ForeignKey(Coupon, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
     
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
@@ -48,23 +53,50 @@ class Order(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['-created_at']),
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['status']),
+        ]
 
     def __str__(self):
         return f"Order #{self.order_id}"
 
+    @property
+    def coupon_code(self):
+        """Get coupon code if applied"""
+        return self.coupon.code if self.coupon else None
+
 
 class OrderItem(models.Model):
-    """Individual items in an order"""
+    """Individual items in an order with discount tracking"""
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     product_name = models.CharField(max_length=200)
     product_weight = models.CharField(max_length=50)
     quantity = models.PositiveIntegerField()
-    price = models.DecimalField(max_digits=10, decimal_places=2)
     
+    # Pricing (with discount support)
+    price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Original price per unit")
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Total discount for this item")
+    discounted_price = models.DecimalField(max_digits=10, decimal_places=2, default= 0, help_text="Price per unit after discount")
+    tax_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Tax for this item")
+    final_price = models.DecimalField(max_digits=10, decimal_places=2, default = 0, help_text="Total price for this item")
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['order', 'product']),
+        ]
+
     def __str__(self):
         return f"{self.product_name} x {self.quantity}"
 
     @property
-    def subtotal(self):
+    def original_subtotal(self):
+        """Original subtotal before discount"""
         return self.price * self.quantity
+
+    @property
+    def savings(self):
+        """Amount saved on this item"""
+        return self.discount_amount

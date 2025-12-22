@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from .models import Cart, CartItem, Favorite
 from products.serializers import ProductListSerializer
+from admin_panel.serializers import CouponSerializer
+
+
 
 class CartItemSerializer(serializers.ModelSerializer):
     product = ProductListSerializer(read_only=True)
@@ -19,6 +22,10 @@ class CartSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cart
         fields = ['id', 'items', 'total_price', 'total_items', 'created_at', 'updated_at']
+
+class ValidateCouponSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=50, required=True)  
+
 
 class FavoriteSerializer(serializers.ModelSerializer):
     id = serializers.CharField(source='product.id')

@@ -1,33 +1,111 @@
+# serializers.py
 from rest_framework import serializers
 from .models import Order, OrderItem
 
-class OrderItemSerializer(serializers.ModelSerializer):
+
+class OrderCreateSerializer(serializers.Serializer):
+    shipping_address = serializers.CharField(max_length=500)
+    phone_number = serializers.CharField(max_length=15)
+    payment_method = serializers.ChoiceField(choices=['COD', 'ONLINE'])
+    # coupon_code = serializers.CharField(max_length=20, required=False, allow_blank=True)
+
+
+# ----- Shared item serializer for list/detail (aligned with frontend) -----
+
+class OrderItemListSerializer(serializers.ModelSerializer):
+    product_id = serializers.IntegerField(source="product.id", read_only=True)
+    product_name = serializers.CharField()
+    quantity = serializers.IntegerField()
+    price = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total = serializers.SerializerMethodField()
+
     class Meta:
         model = OrderItem
-        fields = ['id', 'product', 'product_name', 'product_weight', 'quantity', 'price', 'subtotal']
+        fields = [
+            "id",
+            "product_id",
+            "product_name",
+            "quantity",
+            "price",
+            "total",
+        ]
 
-class OrderListSerializer(serializers.ModelSerializer):
-    items_count = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Order
-        fields = ['id', 'order_id', 'status', 'payment_method', 'total_amount', 'items_count', 'created_at']
+    def get_total(self, obj):
+        # Prefer final_price if present, else price * quantity
+        if hasattr(obj, "final_price") and obj.final_price is not None:
+            return obj.final_price
+        return obj.price * obj.quantity
 
-    def get_items_count(self, obj):
-        return obj.items.count()
+
+# ----- Detail serializer (full) -----
 
 class OrderDetailSerializer(serializers.ModelSerializer):
-    items = OrderItemSerializer(many=True, read_only=True)
+    items = OrderItemListSerializer(many=True, read_only=True)
+    coupon_code = serializers.CharField(source='coupon.code', read_only=True)
+    order_number = serializers.SerializerMethodField()
+    subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
+    discount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, source="discount_amount"
+    )
+    tax = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total = serializers.DecimalField(
+        max_digits=10, decimal_places=2, source="total_amount"
+    )
 
     class Meta:
         model = Order
-        fields = ['id', 'order_id', 'user', 'status', 'payment_method', 
-                  'shipping_address', 'shipping_city', 'shipping_state', 
-                  'shipping_pincode', 'phone', 'subtotal', 'shipping_charge', 
-                  'tax', 'total_amount', 'items', 'created_at', 'updated_at']
+        fields = [
+            "id",
+            "order_number",
+            "status",
+            "items",
+            "subtotal",
+            "tax",
+            "discount",
+            "total",
+            "shipping_address",
+            "phone_number",
+            "payment_method",
+            "coupon_code",
+            "created_at",
+            "updated_at",
+        ]
 
-class OrderCreateSerializer(serializers.ModelSerializer):
+    def get_order_number(self, obj):
+        return f"ORD-{obj.id:06d}"
+
+
+# ----- List serializer (richer, matches frontend Order interface) -----
+
+class OrderListSerializer(serializers.ModelSerializer):
+    coupon_code = serializers.CharField(source='coupon.code', read_only=True)
+    order_number = serializers.SerializerMethodField()
+    items = OrderItemListSerializer(many=True, read_only=True)
+    subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
+    discount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, source="discount_amount"
+    )
+    tax = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total = serializers.DecimalField(
+        max_digits=10, decimal_places=2, source="total_amount"
+    )
+
     class Meta:
         model = Order
-        fields = ['shipping_address', 'shipping_city', 'shipping_state', 
-                  'shipping_pincode', 'phone', 'payment_method']
+        fields = [
+            "id",
+            "order_number",
+            "status",
+            "items",
+            "subtotal",
+            "tax",
+            "discount",
+            "total",
+            "shipping_address",
+            "created_at",
+            "updated_at",
+            "coupon_code",
+        ]
+
+    def get_order_number(self, obj):
+        return f"ORD-{obj.id:06d}"

@@ -11,3 +11,4 @@ psycopg2-binary
 drf-spectacular
 celery
 django_redis
+qrcode
