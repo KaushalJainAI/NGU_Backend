@@ -1,4 +1,31 @@
-# views.py - FIXED VERSION WITH PROPER CART DELETION
+"""
+Order Views - Order Management API
+
+Architecture:
+- OrderViewSet: Complete order CRUD with role-based filtering
+  - Regular users: see only their orders
+  - Admins (is_staff): see all orders
+
+Order Creation Flow:
+1. Validate cart exists and has items
+2. Validate coupon if provided (checks is_active, valid_until)
+3. Calculate totals: subtotal, discount, shipping (free >₹500), tax (5%)
+4. Create Order + OrderItems in atomic transaction
+5. Reduce product stock within transaction
+6. Clear cart AFTER successful transaction (prevents rollback issues)
+
+Key Design Decisions:
+1. Cart cleared OUTSIDE transaction - if cart deletion fails, order still succeeds
+2. Proportional discount - each item gets discount proportional to its share of subtotal
+3. Stock validation before order creation - prevents overselling
+4. Combos have default stock of 999 (effectively unlimited)
+5. Order number format: ORD-XXXXXX (6 digit padded ID)
+
+Status Workflow:
+pending → confirmed → processing → shipped → delivered
+    └──────────────────────────────────────→ cancelled
+"""
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response

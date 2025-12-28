@@ -1,3 +1,25 @@
+"""
+Cart Views - Shopping Cart API
+
+Architecture:
+- CartViewSet: Main cart operations (list, add, update, remove, sync)
+- ValidateCouponAPIView: Coupon validation for checkout
+- CartPaymentQRView: UPI QR code generation for payment
+- FavoritesViewSet: Wishlist/favorites management
+
+Key Design Decisions:
+1. Cart items support both Products AND Combos via item_type field
+2. Stock validation happens on add/update to prevent overselling
+3. Sync endpoint allows merging localStorage cart with backend on login
+4. All operations use atomic transactions to prevent race conditions
+5. Quantity validation: must be positive integer (no negative, no floats)
+
+Item Identification:
+- Products: identified by product_id + item_type='product'
+- Combos: identified by product_id + item_type='combo'
+- Remove accepts composite keys: "product-123" or "combo-456"
+"""
+
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response

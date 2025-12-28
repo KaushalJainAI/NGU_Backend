@@ -1,97 +1,151 @@
 # API Permissions Reference
 
-This document lists all API endpoints and their required permissions.
+Complete reference for all API endpoints and their permission requirements.
 
 ---
 
-## 🔓 Public (No Authentication Required)
+## Permission Classes Used
 
-| Endpoint | Method | Permission | Rate Limit | Description |
-|----------|--------|------------|------------|-------------|
-| `/api/categories/` | GET | Public | 100/hr | List categories |
-| `/api/products/` | GET | Public | 100/hr | List products |
-| `/api/combos/` | GET | Public | 100/hr | List combos |
-| `/api/product-images/` | GET | Public | 100/hr | View images |
-| `/api/reviews/` | GET | Public | 100/hr | List reviews |
-| `/api/policies/` | GET | Public | 100/hr | View policies |
-| `/api/spice-forms/` | GET | Public | 100/hr | Spice options |
-| `/api/search/` | GET | Public | 100/hr | Unified search |
-| `/api/auth/register/` | POST | Public | **3/min** | Registration |
-| `/api/auth/login/` | POST | Public | **5/min** | Login |
-| `/api/auth/token/refresh/` | POST | Public | 100/hr | Refresh token |
-| `/api/contact/` | POST | Public | **5/hr** | Contact form |
+| Class | Description |
+|-------|-------------|
+| `AllowAny` | No authentication required |
+| `IsAuthenticated` | Must be logged in |
+| `IsAuthenticatedOrReadOnly` | Read = public, Write = auth required |
+| `IsAdminOrReadOnly` | Read = public, Write = admin only |
+| `IsAdminUser` | Admin only (`is_staff=True`) |
 
 ---
 
-## 🔐 Authenticated Users Required
+## 🔓 Public Endpoints (No Authentication)
 
-| Endpoint | Method | Permission | Rate Limit | Description |
-|----------|--------|------------|------------|-------------|
-| `/api/auth/profile/` | GET/PUT | Auth | 1000/hr | View/update profile |
-| `/api/auth/change-password/` | POST | Auth | 1000/hr | Change password |
-| `/api/auth/validate-coupon/` | POST | Auth | 1000/hr | Validate coupon |
-| `/api/cart/` | ALL | Auth | 1000/hr | Cart operations |
-| `/api/favorites/` | ALL | Auth | 1000/hr | Favorites |
-| `/api/orders/` | ALL | Auth | 1000/hr | Orders (own only) |
-| `/api/payment-methods/` | ALL | Auth | 1000/hr | Payment methods |
-| `/api/reviews/` | POST | Auth + **Verified Purchase** | 1000/hr | Create review |
-| `/api/chat-sessions/` | ALL | Auth | 1000/hr | Chat sessions |
-
----
-
-## 👑 Admin Only (is_staff=True)
-
-| Endpoint | Method | Permission | Description |
-|----------|--------|------------|-------------|
-| `/api/categories/` | POST/PUT/DELETE | Admin | Manage categories |
-| `/api/products/` | POST/PUT/DELETE | Admin | Manage products |
-| `/api/combos/` | POST/PUT/DELETE | Admin | Manage combos |
-| `/api/product-images/` | POST/PUT/DELETE | Admin | Manage images |
-| `/api/contact/` | GET/PUT/DELETE | Admin | Manage contacts |
-| `/api/chat-sessions/{id}/close/` | POST | Admin | Close session |
-| `/api/chat-sessions/{id}/assign/` | POST | Admin | Assign session |
-| `/api/receivable-accounts/` | ALL | Admin | Payment accounts |
-| `/api/dashboard/` | GET | Admin | Sales statistics |
-| `/api/coupons/` | ALL | Admin | Manage coupons |
-| `/api/policies/` | PUT/PATCH/DELETE | Admin | Update policies |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/categories/` | GET | List all categories |
+| `/api/categories/{slug}/` | GET | Category detail |
+| `/api/products/` | GET | List products (with filters) |
+| `/api/products/{slug}/` | GET | Product detail |
+| `/api/combos/` | GET | List combos |
+| `/api/combos/{slug}/` | GET | Combo detail |
+| `/api/product-images/` | GET | List product images |
+| `/api/sections/` | GET | Homepage sections |
+| `/api/reviews/` | GET | List reviews |
+| `/api/policies/{type}/` | GET | View shipping/return policy |
+| `/api/spice-forms/` | GET | Spice form options |
+| `/api/auth/register/` | POST | User registration |
+| `/api/auth/login/` | POST | User login (JWT) |
+| `/api/auth/token/refresh/` | POST | Refresh JWT token |
+| `/api/contact/` | POST | Submit contact form |
 
 ---
 
-## Rate Limiting Configuration
+## 🔐 Authenticated Users
 
-| Scope | Limit | Purpose |
-|-------|-------|---------|
-| `anon` | 100/hour | General anonymous requests |
-| `user` | 1000/hour | Authenticated user requests |
-| `login` | 5/minute | Prevent brute force attacks |
-| `register` | 3/minute | Prevent mass account creation |
-| `contact` | 5/hour | Prevent contact form spam |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/auth/profile/` | GET | Get user profile |
+| `/api/auth/profile/` | PUT/PATCH | Update profile |
+| `/api/auth/change-password/` | POST | Change password |
+| `/api/cart/` | GET | View cart |
+| `/api/cart/add_item/` | POST | Add to cart |
+| `/api/cart/update_item/` | POST | Update cart quantity |
+| `/api/cart/remove_item/` | DELETE/POST | Remove from cart |
+| `/api/cart/clear/` | POST | Clear cart |
+| `/api/cart/sync/` | POST | Sync localStorage cart |
+| `/api/cart/qr/` | POST | Generate UPI QR |
+| `/api/favorites/` | GET | List favorites |
+| `/api/favorites/` | POST | Add to favorites |
+| `/api/favorites/{id}/` | DELETE | Remove from favorites |
+| `/api/favorites/sync/` | POST | Sync favorites |
+| `/api/orders/` | GET | List user's orders |
+| `/api/orders/` | POST | Create order |
+| `/api/orders/{id}/` | GET | Order detail |
+| `/api/orders/{id}/cancel/` | POST | Cancel order |
+| `/api/orders/validate_coupon/` | POST | Validate coupon |
+| `/api/validate-coupon/` | POST | Validate coupon (alt) |
+| `/api/reviews/` | POST | Create review* |
+| `/api/chat-sessions/` | GET | List user's chat sessions |
+| `/api/chat-sessions/` | POST | Create chat session |
+| `/api/chat-sessions/{id}/` | GET | Session detail |
+| `/api/chat-sessions/{id}/messages/` | GET/POST | Get/send messages |
+| `/api/payment-account/` | GET | Get payment account |
+
+*Reviews require verified purchase (delivered order containing the product)
 
 ---
 
-## Review Verification
+## 👑 Admin Only (`is_staff=True`)
 
-Reviews now require **verified purchase**:
-- User must have a **delivered** order containing the item
-- Only verified purchases can submit reviews
-- All verified reviews are marked `is_verified_purchase=True`
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/categories/` | POST/PUT/DELETE | Manage categories |
+| `/api/products/` | POST/PUT/DELETE | Manage products |
+| `/api/product-images/` | POST/PUT/DELETE | Manage images |
+| `/api/combos/` | POST/PUT/DELETE | Manage combos |
+| `/api/sections/` | POST/PUT/DELETE | Manage homepage sections |
+| `/api/policies/{type}/` | PUT/PATCH | Update policies |
+| `/api/dashboard/` | GET | Dashboard statistics |
+| `/api/coupons/` | ALL | Manage coupons |
+| `/api/receivable-accounts/` | ALL | Manage payment accounts |
+| `/api/contact/` | GET/PUT/DELETE | Manage contact submissions |
+| `/api/contact/{id}/mark_read/` | POST | Mark as read |
+| `/api/contact/{id}/reply/` | POST | Mark as replied |
+| `/api/chat-sessions/{id}/close/` | POST | Close chat session |
+| `/api/chat-sessions/{id}/assign/` | POST | Assign to admin |
+| `/api/orders/` | GET (all) | View all orders |
+| `/api/orders/{id}/` | PUT/PATCH | Update order status |
 
 ---
 
-## BOLA Protection
+## Rate Limiting
 
-All endpoints filter data by user:
-- Users can only access their **own** orders, cart, payment methods, favorites, and chat sessions
+| Scope | Limit | Applied To |
+|-------|-------|------------|
+| `anon` | 100/hour | Anonymous requests |
+| `user` | 1000/hour | Authenticated requests |
+| `login` | 5/minute | Login endpoint |
+| `register` | 3/minute | Registration endpoint |
+| `contact` | 5/hour | Contact form submission |
+
+---
+
+## Data Access Control (BOLA Protection)
+
+Users can only access their own:
+- **Cart** - One cart per user
+- **Orders** - Only their own orders
+- **Favorites** - Their saved products
+- **Chat Sessions** - Sessions they created
+- **Profile** - Their own profile only
+
+Admins (`is_staff=True`) can access all data.
+
+---
+
+## Special Permissions
+
+### Review Verification
+- Users can only review products from **delivered** orders
+- Reviews are marked `is_verified_purchase=True`
+
+### Order Access
+- Regular users: Own orders only
+- Admins: All orders (for management)
+
+### Chat Sessions
+- Sessions are linked to specific orders
+- Users can only access sessions for their own orders
+- Admins can access all sessions
 
 ---
 
 ## Security Notes
 
-- **Receivable Accounts**: Admin-only (protects payment collection)
-- **Dashboard**: Admin-only (protects business data)
-- **Reviews**: Requires delivered order (prevents fake reviews)
-- **Login/Register**: Rate limited (prevents attacks)
+1. **Receivable Accounts** - Admin-only to protect payment collection details
+2. **Dashboard** - Admin-only to protect business metrics
+3. **JWT Tokens** - 1 hour access, 7 day refresh
+4. **Password Hashing** - Django's PBKDF2 with SHA256
+5. **CORS** - Configured for specific origins only
 
 ---
 
-*Updated: December 2025*
+*Last Updated: December 2024*

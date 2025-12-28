@@ -1,471 +1,172 @@
-# 🌶️ Django REST Framework - Spices E-commerce Backend
-## Complete Implementation Guide
+# 🌶️ NGU Spices - Backend API
 
----
+A production-ready Django REST Framework backend for the NGU Spices e-commerce platform.
 
-## 📖 README
+## ✨ Features
 
-This is a **production-ready, complete Django REST Framework backend** for a spices e-commerce website. All code is provided and ready to use.
+- **JWT Authentication** - Secure token-based authentication
+- **User Management** - Registration, profiles, addresses
+- **Product Catalog** - Products, combos, categories with S3 image storage
+- **Shopping Cart** - Persistent cart with product/combo support
+- **Orders** - Full order lifecycle with status tracking
+- **Payments** - Razorpay integration with COD support
+- **Reviews** - Product ratings and reviews
+- **Support Chat** - Real-time customer support per order
+- **Admin Dashboard** - Sales stats, order management, coupons
+- **Redis Caching** - Fast product/category caching
+- **AWS S3** - Cloud storage for media files
 
-### ✨ Features Included
+## 🛠️ Tech Stack
 
-✅ **JWT Authentication** - Secure user authentication with tokens  
-✅ **User Management** - Registration, profile, address  
-✅ **Product Catalog** - Categories, products with variants  
-✅ **Shopping Cart** - Add, update, remove items  
-✅ **Order Management** - Full order lifecycle  
-✅ **Payment Integration** - Stripe, Razorpay, COD  
-✅ **Reviews System** - Ratings and verified purchases  
-✅ **Admin Dashboard** - Full customized Django admin  
-✅ **API Documentation** - Swagger/OpenAPI  
-✅ **Pagination & Filtering** - Advanced search options  
+| Technology | Purpose |
+|------------|---------|
+| Django 5.2 | Web framework |
+| Django REST Framework | API |
+| PostgreSQL (RDS) | Database |
+| Redis | Caching |
+| AWS S3 | File storage |
+| Razorpay | Payments |
+| Docker | Containerization |
 
-### 🛠️ Technology Stack
+## 📦 Project Structure
 
-- **Framework**: Django 4.2+
-- **API**: Django REST Framework
-- **Authentication**: Simple JWT
-- **Database**: SQLite (dev) / PostgreSQL (prod)
-- **Payment**: Stripe, Razorpay
-- **Image Processing**: Pillow
-- **Other**: CORS, Filters, DRF Spectacular
+```
+Backend/
+├── spices_backend/     # Django settings
+├── users/              # Authentication & profiles
+├── products/           # Products, combos, categories
+├── cart/               # Shopping cart
+├── orders/             # Order management
+├── payments/           # Payment processing
+├── reviews/            # Product reviews
+├── support/            # Chat support
+├── admin_panel/        # Dashboard & policies
+├── Dockerfile          # Container config
+└── requirements.txt    # Dependencies
+```
 
----
+## 🚀 Quick Start
 
-## 📦 FILES PROVIDED
-
-| File | Purpose |
-|------|---------|
-| `requirements.txt` | All Python dependencies |
-| `settings.py` | Django configuration |
-| `.env.example` | Environment variables template |
-| `all-models.py` | All model definitions |
-| `all-serializers.py` | All serializer definitions |
-| `all-views.py` | All view definitions |
-| `urls-and-admin.py` | URL routing and admin config |
-| `SETUP-GUIDE.md` | Step-by-step setup instructions |
-| `README.md` | This file |
-
----
-
-## 🚀 QUICK START (5 MINUTES)
-
-### 1. Create Project Structure
+### Local Development
 
 ```bash
-mkdir spices_ecommerce && cd spices_ecommerce
+# Create virtual environment
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
-django-admin startproject spices_backend .
-python manage.py startapp users
-python manage.py startapp products
-python manage.py startapp cart
-python manage.py startapp orders
-python manage.py startapp payments
-python manage.py startapp reviews
-```
 
-### 2. Copy Provided Files
+# Copy environment file
+cp .env.example .env
+# Edit .env with your values
 
-1. Copy `settings.py` → `spices_backend/settings.py`
-2. Copy content from `all-models.py` to respective app `models.py` files
-3. Copy content from `all-serializers.py` to respective app `serializers.py` files
-4. Copy content from `all-views.py` to respective app `views.py` files
-5. Copy content from `urls-and-admin.py` to respective files
-6. Copy `.env.example` as `.env` and update with your values
-
-### 3. Database Setup
-
-```bash
-python manage.py makemigrations
+# Run migrations
 python manage.py migrate
+
+# Create admin user
 python manage.py createsuperuser
-```
 
-### 4. Run Server
-
-```bash
+# Start server
 python manage.py runserver
 ```
 
-✅ Access at `http://localhost:8000`
+### Docker
 
----
-
-## 📊 API ENDPOINTS
-
-### Authentication (6 endpoints)
-```
-POST   /api/auth/register/           - Register new user
-POST   /api/auth/login/              - Login (JWT tokens)
-POST   /api/auth/token/refresh/      - Refresh token
-GET    /api/auth/profile/            - Get user profile
-PUT    /api/auth/profile/            - Update profile
-```
-
-### Products (4 endpoints)
-```
-GET    /api/categories/              - List categories
-GET    /api/categories/{slug}/       - Category detail
-GET    /api/products/                - List products (with filters)
-GET    /api/products/{slug}/         - Product detail
-```
-
-### Cart (6 endpoints)
-```
-GET    /api/cart/                    - Get cart
-POST   /api/cart/add_item/           - Add to cart
-POST   /api/cart/update_item/        - Update quantity
-DELETE /api/cart/remove_item/        - Remove from cart
-POST   /api/cart/clear/              - Clear cart
-```
-
-### Orders (4 endpoints)
-```
-GET    /api/orders/                  - List orders
-POST   /api/orders/                  - Create order
-GET    /api/orders/{id}/             - Order detail
-POST   /api/orders/{id}/cancel/      - Cancel order
-```
-
-### Reviews (4 endpoints)
-```
-GET    /api/reviews/                 - List reviews
-POST   /api/reviews/                 - Create review
-GET    /api/reviews/{id}/            - Review detail
-PUT    /api/reviews/{id}/            - Update review
-DELETE /api/reviews/{id}/            - Delete review
-```
-
-**Total: 24+ RESTful API endpoints**
-
----
-
-## 📱 Request/Response Examples
-
-### Register User
 ```bash
-curl -X POST http://localhost:8000/api/auth/register/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "username": "john",
-    "email": "john@example.com",
-    "password": "Pass123!@#",
-    "password2": "Pass123!@#",
-    "phone": "9876543210"
-  }'
+docker build -t ngu-backend .
+docker run -p 8000:8000 --env-file .env ngu-backend
 ```
 
-### Login
-```bash
-curl -X POST http://localhost:8000/api/auth/login/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "john@example.com",
-    "password": "Pass123!@#"
-  }'
+## 🔧 Environment Variables
 
-# Response:
-{
-  "refresh": "eyJ0eXAiOiJKV1QiLCJhbGc...",
-  "access": "eyJ0eXAiOiJKV1QiLCJhbGc..."
-}
+```env
+# Django
+SECRET_KEY=your-secret-key
+DEBUG=False
+ALLOWED_HOSTS=localhost,your-domain.com
+
+# Database (RDS)
+DB_ENGINE=django.db.backends.postgresql
+DB_NAME=ngu_db
+DB_USER=admin
+DB_PASSWORD=password
+DB_HOST=your-rds-endpoint.rds.amazonaws.com
+DB_PORT=5432
+
+# AWS S3
+USE_S3=True
+AWS_ACCESS_KEY_ID=your-key
+AWS_SECRET_ACCESS_KEY=your-secret
+AWS_STORAGE_BUCKET_NAME=your-bucket
+AWS_S3_REGION_NAME=ap-south-1
+
+# Redis
+REDIS_URL=redis://localhost:6379/0
+
+# Payments
+RAZORPAY_KEY_ID=your-key
+RAZORPAY_KEY_SECRET=your-secret
 ```
 
-### Get Products (with filtering)
-```bash
-curl -X GET "http://localhost:8000/api/products/?category=1&organic=true&search=pepper" \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
-```
+## 📊 API Endpoints
 
-### Add to Cart
-```bash
-curl -X POST http://localhost:8000/api/cart/add_item/ \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "product_id": 1,
-    "quantity": 2
-  }'
-```
-
-### Create Order
-```bash
-curl -X POST http://localhost:8000/api/orders/ \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "shipping_address": "123 Main St",
-    "shipping_city": "Delhi",
-    "shipping_state": "Delhi",
-    "shipping_pincode": "110001",
-    "phone": "9876543210",
-    "payment_method": "cod"
-  }'
-```
-
-### Add Review
-```bash
-curl -X POST http://localhost:8000/api/reviews/ \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "product": 1,
-    "rating": 5,
-    "title": "Excellent Quality",
-    "comment": "Best spices I have ever bought!"
-  }'
-```
-
----
-
-## 🗄️ Database Models
-
-### Users
-- Custom User model with extended fields
-- Email-based authentication
-- Address and phone fields
+### Authentication
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/auth/register/` | Register user |
+| POST | `/api/auth/login/` | Login (JWT) |
+| POST | `/api/auth/token/refresh/` | Refresh token |
+| GET | `/api/auth/profile/` | Get profile |
 
 ### Products
-- Category system
-- Product with variants (weight-based)
-- Spice-specific fields (form, origin, organic, shelf-life)
-- Multiple images support
-- Discount tracking
-- Stock management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/products/` | List products |
+| GET | `/api/products/{slug}/` | Product detail |
+| GET | `/api/combos/` | List combos |
+| GET | `/api/categories/` | List categories |
 
-### Cart
-- Per-user cart
-- Cart items with quantity
-- Automatic subtotal calculation
+### Cart & Orders
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/cart/` | View cart |
+| POST | `/api/cart/add_item/` | Add to cart |
+| GET | `/api/orders/` | List orders |
+| POST | `/api/orders/` | Create order |
 
-### Orders
-- UUID-based order IDs
-- Shipping details
-- Order items tracking
-- Order status workflow
-- Payment status tracking
+### Admin Panel
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/dashboard/` | Dashboard stats |
+| GET | `/api/coupons/` | Manage coupons |
+| GET | `/api/policies/{type}/` | Get policies |
 
-### Payments
-- Payment gateway integration
-- Transaction details storage
-- Payment status tracking
+Full API documentation: `/api/docs/`
 
-### Reviews
-- Product ratings (1-5 stars)
-- Verified purchase badges
-- Average rating calculation
+## 🔐 Permissions
 
----
+| Endpoint | Permission |
+|----------|------------|
+| Products/Categories | Public read, Admin write |
+| Cart | Authenticated users |
+| Orders | Authenticated users |
+| Dashboard/Coupons | Admin only |
 
-## 🔐 Security Features
+## 🧪 Testing
 
-✅ JWT Token Authentication  
-✅ CORS Configuration  
-✅ Password Validation  
-✅ Token Rotation & Blacklisting  
-✅ Permission-based Access Control  
-✅ Environment Variable Protection  
-✅ SQL Injection Prevention (ORM)  
-✅ CSRF Protection  
+```bash
+# Run tests
+pytest
 
----
-
-## 📊 Admin Features
-
-Complete Django admin with:
-
-- User management with profile fields
-- Product management with inline gallery
-- Category with slug auto-population
-- Cart monitoring
-- Order management with inline items
-- Payment tracking
-- Review moderation
-- Filtering, searching, and sorting
-- Bulk actions support
-
-Access at: `http://localhost:8000/admin/`
-
----
-
-## 🧪 Testing API
-
-### Option 1: Postman
-- Import endpoints from API documentation
-- Set authentication tokens
-- Test all endpoints
-
-### Option 2: Thunder Client (VS Code)
-- VS Code Extension
-- Similar to Postman
-- Lightweight
-
-### Option 3: curl
-- Command-line tool
-- Perfect for testing
-
-### Option 4: Swagger UI
-- Built-in API documentation
-- Interactive testing
-- Access at: `/api/docs/`
-
----
+# With coverage
+pytest --cov=.
+```
 
 ## 🚢 Deployment
 
-### Option 1: Heroku
-```bash
-heroku create your-app-name
-heroku config:set DEBUG=False
-git push heroku main
-heroku run python manage.py migrate
-```
-
-### Option 2: Railway
-1. Create account on railway.app
-2. Connect GitHub repository
-3. Add environment variables
-4. Deploy automatically
-
-### Option 3: AWS/DigitalOcean/Azure
-- Use Gunicorn as WSGI server
-- Nginx as reverse proxy
-- PostgreSQL as database
-- Follow platform-specific guides
+See [DEPLOYMENT.md](../DEPLOYMENT.md) for EC2 deployment instructions.
 
 ---
 
-## 🔧 Configuration
-
-### Essential Environment Variables
-
-```
-SECRET_KEY=your-secret-key-here
-DEBUG=False (production)
-ALLOWED_HOSTS=yourdomain.com
-
-# Database
-DB_ENGINE=django.db.backends.postgresql
-DB_NAME=spices_db
-DB_USER=postgres
-DB_PASSWORD=password
-DB_HOST=localhost
-DB_PORT=5432
-
-# Payment Gateways
-STRIPE_PUBLIC_KEY=pk_test_...
-STRIPE_SECRET_KEY=sk_test_...
-RAZORPAY_KEY_ID=key_id...
-RAZORPAY_KEY_SECRET=key_secret...
-
-# CORS
-CORS_ALLOWED_ORIGINS=http://localhost:3000,https://yourdomain.com
-```
-
----
-
-## 📈 Performance Tips
-
-1. **Use PostgreSQL** in production
-2. **Enable Redis Caching**
-3. **Use CDN** for static/media files
-4. **Compress Images** before upload
-5. **Database Indexing** on frequent queries
-6. **Pagination** for large datasets
-7. **Lazy Loading** for images
-8. **API Rate Limiting**
-
----
-
-## 🐛 Common Issues
-
-### Issue: Port 8000 already in use
-```bash
-python manage.py runserver 8001
-```
-
-### Issue: No module named 'decouple'
-```bash
-pip install python-decouple
-```
-
-### Issue: Static files not loading
-```bash
-python manage.py collectstatic --noinput
-```
-
-### Issue: Database migration errors
-```bash
-python manage.py migrate --fake-initial
-```
-
----
-
-## 📚 Resources
-
-- Django Docs: https://docs.djangoproject.com/
-- DRF Docs: https://www.django-rest-framework.org/
-- Simple JWT: https://django-rest-framework-simplejwt.readthedocs.io/
-- Stripe Docs: https://stripe.com/docs/api
-- Razorpay Docs: https://razorpay.com/docs/
-
----
-
-## 💡 Next Steps
-
-1. ✅ Follow SETUP-GUIDE.md for installation
-2. ✅ Test all API endpoints
-3. ✅ Add payment gateway keys
-4. ✅ Create frontend (React/Vue/Next.js)
-5. ✅ Deploy to production
-6. ✅ Monitor and optimize
-
----
-
-## 📞 Support
-
-For issues or questions:
-1. Check troubleshooting section
-2. Review Django documentation
-3. Check DRF documentation
-4. Search Stack Overflow
-
----
-
-## 📝 License
-
-This code is provided as-is for your spices e-commerce backend.
-
----
-
-## 🎉 You're All Set!
-
-Your complete Django REST Framework backend for spices e-commerce is ready to use. 
-
-**Start building! 🚀**
-
----
-
-## Checklist for Production
-
-- [ ] Change SECRET_KEY
-- [ ] Set DEBUG=False
-- [ ] Use PostgreSQL
-- [ ] Setup HTTPS
-- [ ] Configure ALLOWED_HOSTS
-- [ ] Setup email backend
-- [ ] Add payment gateway credentials
-- [ ] Setup Redis for caching
-- [ ] Configure media file storage (AWS S3)
-- [ ] Add logging and monitoring
-- [ ] Setup CI/CD pipeline
-- [ ] Add rate limiting
-- [ ] Enable CORS properly
-- [ ] Add security headers
-- [ ] Backup database regularly
-
----
-
-Made with ❤️ for spices e-commerce
+Made with ❤️ for NGU Spices
