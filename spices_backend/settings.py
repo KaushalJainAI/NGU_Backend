@@ -212,16 +212,16 @@ SIMPLE_JWT = {
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
 
-# CORS Settings
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:3000',    
+# CORS Settings - SECURITY CRITICAL
+# In production, CORS_ALLOW_ALL_ORIGINS should ALWAYS be False
+CORS_ALLOWED_ORIGINS = config(
+    'CORS_ALLOWED_ORIGINS',
+    default='http://localhost:5173,http://127.0.0.1:3000,http://localhost:3000,http://localhost:3001'
+).split(',')
 
-]
-
-CORS_ALLOW_ALL_ORIGINS = True
+# WARNING: Set to False in production! True bypasses the whitelist above
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=DEBUG, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
-
 
 CORS_ALLOW_METHODS = [
     'GET',
@@ -231,6 +231,34 @@ CORS_ALLOW_METHODS = [
     'DELETE',
     'OPTIONS'
 ]
+
+# CSRF Trusted Origins - Required for admin panel login
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='http://localhost:3001,http://localhost:8000,http://127.0.0.1:8000'
+).split(',')
+
+# =============================================================================
+# PRODUCTION SECURITY SETTINGS
+# =============================================================================
+# These are automatically enabled when DEBUG=False
+if not DEBUG:
+    # HTTPS Security
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    
+    # HSTS - Force HTTPS (1 year)
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    
+    # Secure cookies
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    
+    # SSL redirect (set to False if load balancer handles SSL)
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
 
 # Payment Gateway Settings
 STRIPE_PUBLIC_KEY = config('STRIPE_PUBLIC_KEY', default='')
