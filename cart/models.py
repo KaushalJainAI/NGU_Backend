@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db.models import Sum, F, Case, When, DecimalField, Value, IntegerField
+from django.db.models.functions import Coalesce
 from products.models import Product, ProductCombo
 
 
@@ -20,13 +22,45 @@ class Cart(models.Model):
 
     @property
     def total_price(self):
-        """Calculate total price of all items in cart"""
-        return sum(item.subtotal for item in self.items.all())
+        """Calculate total price of all items in cart - OPTIMIZED with DB aggregation"""
+        result = self.items.annotate(
+            item_price=Case(
+                When(
+                    item_type='product',
+                    then=Coalesce(F('product__discount_price'), F('product__price'))
+                ),
+                When(
+                    item_type='combo',
+                    then=Coalesce(F('combo__discount_price'), F('combo__price'))
+                ),
+                default=Value(0),
+                output_field=DecimalField(max_digits=10, decimal_places=2)
+            )
+        ).aggregate(
+            total=Sum(F('item_price') * F('quantity'), output_field=DecimalField())
+        )
+        return result['total'] or 0
 
     @property
     def total_items(self):
-        """Calculate total number of items in cart"""
-        return sum(item.quantity for item in self.items.all())
+        """Calculate total number of items in cart - OPTIMIZED with DB aggregation"""
+        result = self.items.aggregate(total=Sum('quantity'))
+        return result['total'] or 0
+
+    def get_items_with_details(self):
+        """Get cart items with related product/combo data in a single query - OPTIMIZED"""
+        return self.items.select_related(
+            'product', 
+            'product__category',
+            'combo'
+        ).only(
+            'id', 'item_type', 'quantity', 'created_at',
+            'product__id', 'product__name', 'product__slug', 'product__image',
+            'product__price', 'product__discount_price', 'product__weight', 
+            'product__stock', 'product__category__name',
+            'combo__id', 'combo__name', 'combo__slug', 'combo__image',
+            'combo__price', 'combo__discount_price'
+        )
 
 
 class CartItem(models.Model):

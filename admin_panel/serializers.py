@@ -27,13 +27,19 @@ class CouponSerializer(serializers.ModelSerializer):
         return super().is_valid(raise_exception=raise_exception)
     
 class RecentOrderSerializer(serializers.ModelSerializer):
-    customerName = serializers.CharField(source='customer.name')
+    customerName = serializers.SerializerMethodField()
     totalAmount = serializers.DecimalField(source='total_amount', max_digits=10, decimal_places=2)
     createdAt = serializers.DateTimeField(source='created_at')
     
     class Meta:
         model = Order
         fields = ['id', 'customerName', 'totalAmount', 'status', 'createdAt']
+    
+    def get_customerName(self, obj):
+        if obj.user:
+            name = f"{obj.user.first_name} {obj.user.last_name}".strip()
+            return name if name else obj.user.email
+        return "Guest"
     
 from rest_framework import serializers
 from .models import Policy

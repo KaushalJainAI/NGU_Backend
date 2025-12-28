@@ -80,6 +80,8 @@ class OrderDetailSerializer(serializers.ModelSerializer):
 class OrderListSerializer(serializers.ModelSerializer):
     coupon_code = serializers.CharField(source='coupon.code', read_only=True)
     order_number = serializers.SerializerMethodField()
+    customer_name = serializers.SerializerMethodField()
+    customer_email = serializers.SerializerMethodField()
     items = OrderItemListSerializer(many=True, read_only=True)
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2)
     discount = serializers.DecimalField(
@@ -95,6 +97,8 @@ class OrderListSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "order_number",
+            "customer_name",
+            "customer_email",
             "status",
             "items",
             "subtotal",
@@ -102,6 +106,8 @@ class OrderListSerializer(serializers.ModelSerializer):
             "discount",
             "total",
             "shipping_address",
+            "phone_number",
+            "payment_method",
             "created_at",
             "updated_at",
             "coupon_code",
@@ -109,3 +115,12 @@ class OrderListSerializer(serializers.ModelSerializer):
 
     def get_order_number(self, obj):
         return f"ORD-{obj.id:06d}"
+    
+    def get_customer_name(self, obj):
+        if obj.user:
+            return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.email
+        return "Guest"
+    
+    def get_customer_email(self, obj):
+        return obj.user.email if obj.user else None
+

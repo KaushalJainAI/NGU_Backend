@@ -12,7 +12,7 @@ class CartItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CartItem
-        fields = ['id', 'product', 'product_id', 'quantity', 'subtotal', 'created_at']
+        fields = ['id', 'product', 'product_id', 'quantity', 'subtotal', 'created_at', 'item_type']
 
 class CartSerializer(serializers.ModelSerializer):
     items = CartItemSerializer(many=True, read_only=True)
@@ -21,7 +21,7 @@ class CartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Cart
-        fields = ['id', 'items', 'total_price', 'total_items', 'created_at', 'updated_at']
+        fields = ['id', 'items', 'total_price', 'total_items', 'created_at', 'updated_at', 'item_type']
 
 class ValidateCouponSerializer(serializers.Serializer):
     code = serializers.CharField(max_length=50, required=True)  

@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Category, Product, ProductImage, ProductCombo, ProductComboItem, ProductSection
+from .models import Category, Product, ProductImage, ProductCombo, ProductComboItem, ProductSection, ProductSearchKB, ProductComboSearchKB
 
 
 @admin.register(ProductSection)
@@ -117,3 +117,40 @@ class ProductComboItemAdmin(admin.ModelAdmin):
     list_filter = ['combo']
     search_fields = ['combo__name', 'product__name']
     autocomplete_fields = ['combo', 'product']
+
+@admin.register(ProductSearchKB)
+class ProductSearchKBAdmin(admin.ModelAdmin):
+    list_display = ['product', 'last_updated']
+    search_fields = ['product__name', 'synonyms']
+    list_filter = ['last_updated']
+    autocomplete_fields = ['product']
+    ordering = ['-last_updated']
+    readonly_fields = ['last_updated']
+    
+    fieldsets = (
+        ('Product Link', {
+            'fields': ('product',)
+        }),
+        ('Search Data', {
+            'fields': ('synonyms', 'last_updated')
+        }),
+    )
+
+
+@admin.register(ProductComboSearchKB)
+class ProductComboSearchKBAdmin(admin.ModelAdmin):
+    list_display = ['combo', 'last_updated']
+    search_fields = ['combo__name', 'synonyms']
+    list_filter = ['last_updated']
+    autocomplete_fields = ['combo']
+    ordering = ['-last_updated']
+    readonly_fields = ['last_updated']
+    
+    fieldsets = (
+        ('Combo Link', {
+            'fields': ('combo',)
+        }),
+        ('Search Data', {
+            'fields': ('synonyms', 'last_updated')
+        }),
+    )

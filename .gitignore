@@ -19,6 +19,7 @@ db.sqlite3
 
 # Static files
 /static/
+/staticfiles/
 # If static files are collected into a specific folder, ignore that as well
 
 # Django migrations
@@ -55,7 +56,12 @@ Desktop.ini
 
 # Environment variable files
 .env
+.env.local
+.env.production
+.env.staging
+.env.*.local
 .envrc
+# Keep .env.example - it's safe to commit
 
 # Coverage reports
 htmlcov/
@@ -74,7 +80,7 @@ coverage.xml
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
-# Docker-related files (if used)
-Dockerfile
-docker-compose.yml
+# Docker-related files - commented out to track Dockerfiles in version control
+# Dockerfile
+# docker-compose.yml
 

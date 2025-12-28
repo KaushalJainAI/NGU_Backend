@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_filters',
     'drf_spectacular',
+    'storages',
     
     # Local apps
     'users.apps.UsersConfig',
@@ -34,7 +35,8 @@ INSTALLED_APPS = [
     'orders.apps.OrdersConfig',
     'payments.apps.PaymentsConfig',
     'reviews.apps.ReviewsConfig',
-    'admin_panel.apps.AdminPanelConfig'
+    'admin_panel.apps.AdminPanelConfig',
+    'support.apps.SupportConfig'
 ]
 
 MIDDLEWARE = [
@@ -72,13 +74,18 @@ WSGI_APPLICATION = 'spices_backend.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': config('DB_ENGINE', default='django.db.backends.sqlite3'),
-        'NAME': BASE_DIR / config('DB_NAME', default='db.sqlite3'),
+        'NAME': config('DB_NAME', default=str(BASE_DIR / 'db.sqlite3')),
         'USER': config('DB_USER', default=''),
         'PASSWORD': config('DB_PASSWORD', default=''),
         'HOST': config('DB_HOST', default=''),
         'PORT': config('DB_PORT', default=''),
+        # Connection pooling - reuse connections for 60 seconds
+        # Reduces connection overhead significantly
+        'CONN_MAX_AGE': 60,
+        'CONN_HEALTH_CHECKS': True,  # Django 4.1+ - check connection health
     }
 }
+
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -102,13 +109,48 @@ TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
 USE_TZ = True
 
-# Static files (CSS, JavaScript, Images)
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+# AWS S3 Configuration
+USE_S3 = config('USE_S3', default=False, cast=bool)
 
-# Media files
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+if USE_S3:
+    AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
+    AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY')
+    AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME')
+    AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='ap-south-1')
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    
+    AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com'
+    AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
+    AWS_DEFAULT_ACL = None  # Use bucket policy instead of ACL (AWS default)
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_QUERYSTRING_AUTH = False  # No signed URLs for public files
+    
+    # Django 4.2+ / 5.x storage configuration
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+            "OPTIONS": {
+                "location": "media",  # Upload media files to 'media/' folder in bucket
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "storages.backends.s3boto3.S3StaticStorage",
+            "OPTIONS": {
+                "location": "static",  # Static files go to 'static/' folder
+            },
+        },
+    }
+    
+    STATIC_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/static/'
+    MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/media/'
+    
+    # Also define STATIC_ROOT for collectstatic command
+    STATIC_ROOT = BASE_DIR / 'staticfiles'
+else:
+    STATIC_URL = '/static/'
+    STATIC_ROOT = BASE_DIR / 'staticfiles'
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -135,6 +177,18 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
     ),
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # Rate Limiting / Throttling
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '1000/hour',      # Anonymous users: 100 requests per hour
+        'user': '10000/hour',     # Authenticated users: 1000 requests per hour
+        'login': '5/minute',     # Login attempts: 5 per minute
+        'register': '3/minute',  # Registration: 3 per minute
+        'contact': '5/hour',     # Contact form: 5 per hour
+    }
 }
 
 # JWT Configuration
@@ -213,22 +267,83 @@ LOGGING = {
         'handlers': ['console'],
         'level': 'DEBUG',
     },
-}
-
-# Redis Configuration
-CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://127.0.0.1:6379/0'),
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+    # S3/AWS logging - captures upload failures and connection issues
+    'loggers': {
+        'boto3': {
+            'handlers': ['console'],
+            'level': 'WARNING',  # Change to DEBUG for verbose S3 debugging
+            'propagate': False,
         },
-    }
+        'botocore': {
+            'handlers': ['console'],
+            'level': 'WARNING',  # Change to DEBUG for verbose S3 debugging
+            'propagate': False,
+        },
+        's3transfer': {
+            'handlers': ['console'],
+            'level': 'WARNING',  # Change to DEBUG for transfer details
+            'propagate': False,
+        },
+        'storages': {
+            'handlers': ['console'],
+            'level': 'DEBUG',  # Django-storages logging
+            'propagate': False,
+        },
+    },
 }
 
-# Celery Configuration
-CELERY_BROKER_URL = config('REDIS_URL', default='redis://127.0.0.1:6379/0')
-CELERY_RESULT_BACKEND = config('REDIS_URL', default='redis://127.0.0.1:6379/0')
+# =============================================================================
+# CACHE CONFIGURATION
+# =============================================================================
+# Redis caching - works on both Windows (Memurai) and Linux
+# Set REDIS_URL in .env to enable Redis, otherwise falls back to local memory cache
+#
+# Examples:
+#   - Local development: REDIS_URL=redis://127.0.0.1:6379/0
+#   - Production Linux:  REDIS_URL=redis://redis-server:6379/0
+#   - With password:     REDIS_URL=redis://:password@host:6379/0
+
+REDIS_URL = config('REDIS_URL', default='')
+
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+                # Connection settings
+                'SOCKET_CONNECT_TIMEOUT': 5,
+                'SOCKET_TIMEOUT': 5,
+                'RETRY_ON_TIMEOUT': True,
+                # Serialization
+                'SERIALIZER': 'django_redis.serializers.json.JSONSerializer',
+            },
+            'KEY_PREFIX': 'ngu',
+            'TIMEOUT': 300,  # 5 minutes default timeout
+        }
+    }
+    # Use Redis for sessions too (optional, for better performance)
+    SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+    SESSION_CACHE_ALIAS = 'default'
+else:
+    # Fallback to local memory cache (for development without Redis)
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'unique-snowflake',
+        }
+    }
+
+# Cache timeout constants (in seconds)
+CACHE_TTL_SHORT = 60          # 1 minute - for frequently changing data
+CACHE_TTL_MEDIUM = 300        # 5 minutes - for product lists
+CACHE_TTL_LONG = 900          # 15 minutes - for categories, static data
+CACHE_TTL_DASHBOARD = 120     # 2 minutes - for dashboard stats
+
+# Celery Configuration (optional - only if using background tasks)
+# CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
+# CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'

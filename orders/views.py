@@ -19,7 +19,12 @@ class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Order.objects.filter(user=self.request.user).prefetch_related('items__product')
+        user = self.request.user
+        # Admin/superusers can see all orders
+        if user.is_staff or user.is_superuser:
+            return Order.objects.all().prefetch_related('items__product', 'items__combo').select_related('user')
+        # Regular users only see their own orders
+        return Order.objects.filter(user=user).prefetch_related('items__product', 'items__combo')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -139,18 +144,39 @@ class OrderViewSet(viewsets.ModelViewSet):
         cart_items_data = []
         subtotal = Decimal('0')
         
-        for cart_item in cart.items.select_related('product').all():
+        for cart_item in cart.items.select_related('product', 'combo').all():
+            # Handle both products and combos
+            if cart_item.item_type == 'product' and cart_item.product:
+                item = cart_item.product
+                item_name = cart_item.product.name
+                item_weight = getattr(cart_item.product, 'weight', '')
+                item_stock = cart_item.product.stock
+                item_price = cart_item.product.final_price if hasattr(cart_item.product, 'final_price') else cart_item.product.price
+                product_ref = cart_item.product
+            elif cart_item.item_type == 'combo' and cart_item.combo:
+                item = cart_item.combo
+                item_name = cart_item.combo.name
+                item_weight = getattr(cart_item.combo, 'weight', 'Combo')
+                item_stock = getattr(cart_item.combo, 'stock', 999)  # Combos may not have stock limit
+                item_price = cart_item.combo.final_price if hasattr(cart_item.combo, 'final_price') else cart_item.combo.price
+                product_ref = None  # Combos don't have a product reference
+            else:
+                # Skip invalid items
+                logger.warning(f"Skipping invalid cart item: {cart_item.id}")
+                continue
+            
             # Check stock availability
-            if cart_item.product.stock < cart_item.quantity:
+            if item_stock < cart_item.quantity:
                 return Response({
-                    'error': f'Insufficient stock for {cart_item.product.name}. Available: {cart_item.product.stock}'
+                    'error': f'Insufficient stock for {item_name}. Available: {item_stock}'
                 }, status=status.HTTP_400_BAD_REQUEST)
             
-            item_price = cart_item.product.final_price if hasattr(cart_item.product, 'final_price') else cart_item.product.price
             cart_items_data.append({
-                'product': cart_item.product,
-                'product_name': cart_item.product.name,
-                'product_weight': getattr(cart_item.product, 'weight', ''),
+                'item': item,
+                'product': product_ref,  # Will be None for combos
+                'item_type': cart_item.item_type,
+                'product_name': item_name,
+                'product_weight': item_weight,
                 'quantity': cart_item.quantity,
                 'item_price': item_price,
             })
@@ -199,22 +225,32 @@ class OrderViewSet(viewsets.ModelViewSet):
                     # Calculate tax for this item after discount
                     item_tax = (discounted_item_total * Decimal('0.05')).quantize(Decimal('0.01'))
 
-                    OrderItem.objects.create(
-                        order=order,
-                        product=item_data['product'],
-                        product_name=item_data['product_name'],
-                        product_weight=item_data['product_weight'],
-                        quantity=quantity,
-                        price=item_price,
-                        discount_amount=item_discount,
-                        discounted_price=discounted_item_price,
-                        tax_amount=item_tax,
-                        final_price=discounted_item_total
-                    )
+                    # Create OrderItem with proper product/combo reference
+                    order_item_data = {
+                        'order': order,
+                        'item_type': item_data['item_type'],
+                        'product_name': item_data['product_name'],
+                        'product_weight': item_data['product_weight'],
+                        'quantity': quantity,
+                        'price': item_price,
+                        'discount_amount': item_discount,
+                        'discounted_price': discounted_item_price,
+                        'tax_amount': item_tax,
+                        'final_price': discounted_item_total,
+                    }
                     
-                    # Reduce stock
-                    item_data['product'].stock -= quantity
-                    item_data['product'].save(update_fields=['stock'])
+                    # Set product or combo reference based on item type
+                    if item_data['item_type'] == 'product':
+                        order_item_data['product'] = item_data['product']
+                    elif item_data['item_type'] == 'combo':
+                        order_item_data['combo'] = item_data['item']
+
+                    OrderItem.objects.create(**order_item_data)
+                    
+                    # Reduce stock only for products (not combos)
+                    if item_data['item_type'] == 'product' and item_data['product']:
+                        item_data['product'].stock -= quantity
+                        item_data['product'].save(update_fields=['stock'])
 
                 # Transaction complete - prepare response data
                 order_data = OrderDetailSerializer(order).data

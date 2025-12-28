@@ -1,7 +1,8 @@
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
 from django.utils.text import slugify
-from django.db.models import Sum
+from django.db.models import Sum, Avg, Count
 
 
 class ProductSection(models.Model):
@@ -41,6 +42,10 @@ class ProductSection(models.Model):
         ordering = ['display_order', 'name']
         verbose_name = 'Product Section'
         verbose_name_plural = 'Product Sections'
+        indexes = [
+            models.Index(fields=['is_active', 'display_order']),
+            models.Index(fields=['section_type', 'is_active']),
+        ]
 
     def __str__(self):
         return self.name
@@ -51,12 +56,22 @@ class ProductSection(models.Model):
         super().save(*args, **kwargs)
 
     def get_products(self):
-        """Get products for this section, limited by max_products"""
-        return self.products.filter(is_active=True)[:self.max_products]
+        """Get products for this section, limited by max_products - OPTIMIZED"""
+        return self.products.filter(
+            is_active=True
+        ).select_related('category').only(
+            'id', 'name', 'slug', 'image', 'price', 'discount_price',
+            'weight', 'badge', 'is_featured', 'category__name'
+        )[:self.max_products]
     
     def get_combos(self):
-        """Get combos for this section, limited by max_products"""
-        return self.combos.filter(is_active=True)[:self.max_products]
+        """Get combos for this section, limited by max_products - OPTIMIZED"""
+        return self.combos.filter(
+            is_active=True
+        ).only(
+            'id', 'name', 'slug', 'title', 'image', 'price', 'discount_price',
+            'badge', 'is_featured'
+        )[:self.max_products]
 
 
 class Category(models.Model):
@@ -72,6 +87,11 @@ class Category(models.Model):
     class Meta:
         verbose_name_plural = 'Categories'
         ordering = ['name']
+        indexes = [
+            models.Index(fields=['slug']),
+            models.Index(fields=['is_active']),
+            models.Index(fields=['is_active', 'name']),
+        ]
 
     def __str__(self):
         return self.name
@@ -166,27 +186,30 @@ class Product(models.Model):
             models.Index(fields=['slug']),
             models.Index(fields=['category', '-created_at']),
             models.Index(fields=['is_featured', '-created_at']),
+            models.Index(fields=['is_active']),
+            models.Index(fields=['is_active', 'stock']),
+            models.Index(fields=['is_active', '-created_at']),
+            models.Index(fields=['spice_form', 'is_active']),
         ]
 
     def __str__(self):
         return f"{self.name} - {self.weight}"
 
+    def clean(self):
+        """Validate discount price is less than regular price"""
+        if self.discount_price and self.price and self.discount_price >= self.price:
+            raise ValidationError({
+                'discount_price': 'Discount price must be less than regular price.'
+            })
+
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = slugify(f"{self.name}-{self.weight}")
         
-        # Track if this is a new product
-        is_new = self.pk is None
+        # Run validation
+        self.full_clean()
         
         super().save(*args, **kwargs)
-        
-        # Auto-assign to "Newly Launched" section if it's a new product
-        if is_new:
-            try:
-                newly_launched = ProductSection.objects.get(section_type='new')
-                self.sections.add(newly_launched)
-            except ProductSection.DoesNotExist:
-                pass
 
     @property
     def final_price(self):
@@ -199,19 +222,6 @@ class Product(models.Model):
         if self.discount_price and self.discount_price < self.price:
             return int(((self.price - self.discount_price) / self.price) * 100)
         return 0
-
-    @property
-    def average_rating(self):
-        """Calculate average rating from reviews"""
-        reviews = self.reviews.all()
-        if reviews:
-            return round(sum([review.rating for review in reviews]) / len(reviews), 1)
-        return 0
-
-    @property
-    def reviews_count(self):
-        """Get total number of reviews"""
-        return self.reviews.count()
 
     @property
     def in_stock(self):
@@ -256,7 +266,7 @@ class ProductCombo(models.Model):
     )
     
     products = models.ManyToManyField(
-        'Product',
+        Product,  # Direct reference since Product is defined above
         through='ProductComboItem',
         related_name='combos'
     )
@@ -293,27 +303,28 @@ class ProductCombo(models.Model):
         indexes = [
             models.Index(fields=['slug']),
             models.Index(fields=['is_featured', '-created_at']),
+            models.Index(fields=['is_active']),
+            models.Index(fields=['is_active', '-created_at']),
         ]
 
     def __str__(self):
         return self.name
 
+    def clean(self):
+        """Validate discount price is less than regular price"""
+        if self.discount_price and self.price and self.discount_price >= self.price:
+            raise ValidationError({
+                'discount_price': 'Discount price must be less than regular price.'
+            })
+
     def save(self, *args, **kwargs):
         if not self.slug:
             self.slug = slugify(self.name)
         
-        # Track if this is a new combo
-        is_new = self.pk is None
+        # Run validation
+        self.full_clean()
         
         super().save(*args, **kwargs)
-        
-        # Auto-assign to "Newly Launched" section if it's a new combo
-        if is_new:
-            try:
-                newly_launched = ProductSection.objects.get(section_type='new')
-                self.sections.add(newly_launched)
-            except ProductSection.DoesNotExist:
-                pass
 
     @property
     def final_price(self):
@@ -330,16 +341,16 @@ class ProductCombo(models.Model):
     @property
     def total_original_price(self):
         """Sum of original prices of products in the combo"""
-        total = self.products.aggregate(
-            total_price=Sum('price')
-        )['total_price']
+        total = self.productcomboitem_set.aggregate(
+            total=Sum(models.F('product__price') * models.F('quantity'))
+        )['total']
         return total or 0
 
     @property
     def total_weight(self):
         """Concat weights of products in the combo"""
         weights = self.products.values_list('weight', flat=True)
-        return ', '.join(set(weights))
+        return ', '.join(set(weights)) if weights else ''
     
     @property
     def display_title(self):
@@ -350,7 +361,7 @@ class ProductCombo(models.Model):
 class ProductComboItem(models.Model):
     """Intermediate model for combo items with quantity"""
     combo = models.ForeignKey(ProductCombo, on_delete=models.CASCADE)
-    product = models.ForeignKey('Product', on_delete=models.CASCADE)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)  # Direct reference
     quantity = models.PositiveIntegerField(default=1, validators=[MinValueValidator(1)])
 
     class Meta:
@@ -358,3 +369,41 @@ class ProductComboItem(models.Model):
 
     def __str__(self):
         return f"{self.quantity} x {self.product.name} in {self.combo.name}"
+
+
+class ProductSearchKB(models.Model):
+    """LLM-generated search synonyms for products"""
+    product = models.OneToOneField(
+        Product, 
+        on_delete=models.CASCADE, 
+        related_name='search_kb'
+    )
+    synonyms = models.JSONField(default=list)
+    last_updated = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        indexes = [models.Index(fields=['last_updated'])]
+        verbose_name = 'Product Search KB'
+        verbose_name_plural = 'Product Search KBs'
+    
+    def get_synonyms_list(self):
+        return self.synonyms if isinstance(self.synonyms, list) else []
+
+
+class ProductComboSearchKB(models.Model):
+    """LLM-generated search synonyms for combos"""
+    combo = models.OneToOneField(
+        ProductCombo, 
+        on_delete=models.CASCADE, 
+        related_name='search_kb'
+    )
+    synonyms = models.JSONField(default=list)
+    last_updated = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        indexes = [models.Index(fields=['last_updated'])]
+        verbose_name = 'Combo Search KB'
+        verbose_name_plural = 'Combo Search KBs'
+    
+    def get_synonyms_list(self):
+        return self.synonyms if isinstance(self.synonyms, list) else []

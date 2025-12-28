@@ -70,8 +70,21 @@ class Order(models.Model):
 
 class OrderItem(models.Model):
     """Individual items in an order with discount tracking"""
+    ITEM_TYPE_CHOICES = [
+        ('product', 'Product'),
+        ('combo', 'Combo'),
+    ]
+    
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey(Product, on_delete=models.PROTECT)
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, null=True, blank=True)
+    combo = models.ForeignKey(
+        'products.ProductCombo', 
+        on_delete=models.PROTECT, 
+        null=True, 
+        blank=True,
+        related_name='order_items'
+    )
+    item_type = models.CharField(max_length=10, choices=ITEM_TYPE_CHOICES, default='product')
     product_name = models.CharField(max_length=200)
     product_weight = models.CharField(max_length=50)
     quantity = models.PositiveIntegerField()
@@ -86,6 +99,7 @@ class OrderItem(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['order', 'product']),
+            models.Index(fields=['order', 'combo']),
         ]
 
     def __str__(self):

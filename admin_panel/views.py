@@ -23,46 +23,86 @@ from products.models import Product, ProductCombo, ProductComboItem
 
 # ==================== PERMISSIONS ====================
 
-class IsSuperUser(permissions.BasePermission):
+class IsAdminUser(permissions.BasePermission):
     """
-    Custom permission to allow only superusers
+    Custom permission to allow only admin users (is_staff=True)
     """
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.is_superuser
+        return request.user and request.user.is_authenticated and request.user.is_staff
 
 
-class IsReadOnlyOrSuperUser(permissions.BasePermission):
+class IsReadOnlyOrAdmin(permissions.BasePermission):
     """
     - Read-only access for everyone (including unauthenticated users)
-    - Write access only for superusers
+    - Write access only for admin users (is_staff=True)
     """
     def has_permission(self, request, view):
         if request.method in SAFE_METHODS:
             return True
-        return request.user and request.user.is_authenticated and request.user.is_superuser
+        return request.user and request.user.is_authenticated and request.user.is_staff
 
 
 # ==================== VIEWSETS ====================
 
 class ReceivableAccountViewSet(viewsets.ModelViewSet):
     """
-    ViewSet to manage receivable accounts by admin (superuser) only
+    ViewSet to manage receivable accounts - admin only for security
+    Protects payment collection accounts from unauthorized access
     """
     queryset = ReceivableAccount.objects.all()
     serializer_class = ReceivableAccountSerializer
+    permission_classes = [IsAdminUser]
+
+
+class PaymentAccountView(APIView):
+    """
+    Returns the default payment account for authenticated users.
+    This is a safe endpoint that only returns the necessary info for checkout.
+    """
     permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        # Get the first receivable account
+        account = ReceivableAccount.objects.first()
+        
+        if not account:
+            return Response(
+                {'error': 'No payment account configured'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+        
+        return Response({
+            'id': account.id,
+            'account_name': account.account_holder_name,
+            'upi_id': account.upi_id,
+        })
 
 
 class CouponViewSet(viewsets.ModelViewSet):
     queryset = Coupon.objects.all()
     serializer_class = CouponSerializer
-    permission_classes = [IsSuperUser]
+    permission_classes = [IsAdminUser]
 
 
 class DashboardViewSet(viewsets.ViewSet):
-    permission_classes = [IsAuthenticated]
+    """
+    Dashboard ViewSet - admin only
+    Contains sales statistics and business data (cached for 2 minutes)
+    """
+    permission_classes = [IsAdminUser]
 
     def list(self, request):
+        from django.core.cache import cache
+        from django.conf import settings
+        
+        cache_key = 'ngu:dashboard:stats'
+        cache_ttl = getattr(settings, 'CACHE_TTL_DASHBOARD', 120)  # 2 minutes
+        
+        # Try to get from cache
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data)
+        
         total_orders = Order.objects.count()
         total_products = Product.objects.count()
         total_combos = ProductCombo.objects.count()
@@ -82,6 +122,9 @@ class DashboardViewSet(viewsets.ViewSet):
             "graphEdgeCount": graph_edges_count,
             "recentOrders": recent_orders
         }
+        
+        # Cache the result
+        cache.set(cache_key, data, cache_ttl)
 
         return Response(data)
 
@@ -90,18 +133,66 @@ class PolicyViewSet(viewsets.ModelViewSet):
     """
     Policy ViewSet:
     - Read-only (retrieve/list) for all users including anonymous
-    - Update/Create/Delete only for superusers
+    - Update/Create/Delete only for admin users
     """
     queryset = Policy.objects.all()
     serializer_class = PolicySerializer
-    permission_classes = [IsReadOnlyOrSuperUser]
+    permission_classes = [IsReadOnlyOrAdmin]
     lookup_field = 'type'
 
     def get_object(self):
-        return get_object_or_404(Policy, type=self.kwargs.get('type'))
+        policy_type = self.kwargs.get('type')
+        try:
+            return Policy.objects.get(type=policy_type)
+        except Policy.DoesNotExist:
+            return None
+
+    def retrieve(self, request, *args, **kwargs):
+        policy = self.get_object()
+        policy_type = self.kwargs.get('type')
+        
+        if policy is None:
+            # Check if it's a valid policy type
+            valid_types = [choice[0] for choice in Policy.POLICY_TYPES]
+            if policy_type not in valid_types:
+                return Response(
+                    {"error": f"Invalid policy type. Valid types are: {', '.join(valid_types)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Return helpful message for admins
+            return Response(
+                {
+                    "error": "Policy not configured",
+                    "message": f"The '{policy_type}' policy has not been created yet. Please create it in the admin panel.",
+                    "type": policy_type,
+                    "content": None
+                },
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        serializer = self.get_serializer(policy)
+        return Response(serializer.data)
 
     def update(self, request, *args, **kwargs):
         policy = self.get_object()
+        policy_type = self.kwargs.get('type')
+        
+        # If policy doesn't exist, create it (for admins)
+        if policy is None:
+            valid_types = [choice[0] for choice in Policy.POLICY_TYPES]
+            if policy_type not in valid_types:
+                return Response(
+                    {"error": f"Invalid policy type. Valid types are: {', '.join(valid_types)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Create new policy
+            serializer = self.get_serializer(data={'type': policy_type, **request.data})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
         if hasattr(policy, 'can_edit_by') and not policy.can_edit_by(request.user):
             return Response(
                 {"error": "No permission to edit"},
@@ -111,6 +202,23 @@ class PolicyViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         policy = self.get_object()
+        policy_type = self.kwargs.get('type')
+        
+        # If policy doesn't exist, create it (for admins)
+        if policy is None:
+            valid_types = [choice[0] for choice in Policy.POLICY_TYPES]
+            if policy_type not in valid_types:
+                return Response(
+                    {"error": f"Invalid policy type. Valid types are: {', '.join(valid_types)}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Create new policy
+            serializer = self.get_serializer(data={'type': policy_type, **request.data})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
         if hasattr(policy, 'can_edit_by') and not policy.can_edit_by(request.user):
             return Response(
                 {"error": "No permission to edit"},

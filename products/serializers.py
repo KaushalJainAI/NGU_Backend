@@ -1,5 +1,6 @@
 import json
 from rest_framework import serializers
+from django.db.models import Avg, Count
 from .models import Category, Product, ProductImage, ProductCombo, ProductComboItem, ProductSection
 
 
@@ -34,7 +35,8 @@ class ProductImageSerializer(serializers.ModelSerializer):
 
 class ProductListSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
-    average_rating = serializers.ReadOnlyField()
+    average_rating = serializers.SerializerMethodField(read_only=True)
+    reviews_count = serializers.SerializerMethodField(read_only=True)
     discount_percentage = serializers.ReadOnlyField()
     in_stock = serializers.ReadOnlyField()
     sections = serializers.PrimaryKeyRelatedField(
@@ -50,18 +52,36 @@ class ProductListSerializer(serializers.ModelSerializer):
             'id', 'name', 'slug', 'category', 'category_name', 'spice_form',
             'price', 'discount_price', 'final_price', 'discount_percentage',
             'stock', 'in_stock', 'weight', 'organic', 'image', 'is_featured',
-            'average_rating', 'created_at', 'badge', 'is_active', 'sections', 'section_names'
+            'average_rating', 'reviews_count', 'created_at', 'badge', 'is_active', 
+            'sections', 'section_names'
         ]
     
     def get_section_names(self, obj):
         return [section.name for section in obj.sections.all()]
+    
+    def get_average_rating(self, obj):
+        """Get average rating using aggregation to avoid N+1 queries"""
+        # Check if the value was prefetched/annotated
+        if hasattr(obj, '_average_rating'):
+            return obj._average_rating
+        # Fallback to manual calculation
+        avg = obj.reviews.aggregate(avg=Avg('rating'))['avg']
+        return round(avg, 1) if avg else 0
+    
+    def get_reviews_count(self, obj):
+        """Get reviews count using aggregation to avoid N+1 queries"""
+        # Check if the value was prefetched/annotated
+        if hasattr(obj, '_reviews_count'):
+            return obj._reviews_count
+        # Fallback to manual count
+        return obj.reviews.count()
 
 
 class ProductDetailSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     images = ProductImageSerializer(many=True, read_only=True)
-    average_rating = serializers.ReadOnlyField()
-    reviews_count = serializers.ReadOnlyField()
+    average_rating = serializers.SerializerMethodField(read_only=True)
+    reviews_count = serializers.SerializerMethodField(read_only=True)
     discount_percentage = serializers.ReadOnlyField()
     in_stock = serializers.ReadOnlyField()
     sections = serializers.PrimaryKeyRelatedField(
@@ -84,6 +104,31 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     
     def get_section_names(self, obj):
         return [section.name for section in obj.sections.all()]
+    
+    def get_average_rating(self, obj):
+        """Get average rating using aggregation"""
+        if hasattr(obj, '_average_rating'):
+            return obj._average_rating
+        avg = obj.reviews.aggregate(avg=Avg('rating'))['avg']
+        return round(avg, 1) if avg else 0
+    
+    def get_reviews_count(self, obj):
+        """Get reviews count using aggregation"""
+        if hasattr(obj, '_reviews_count'):
+            return obj._reviews_count
+        return obj.reviews.count()
+    
+    def validate(self, data):
+        """Validate discount price"""
+        price = data.get('price', getattr(self.instance, 'price', None))
+        discount_price = data.get('discount_price')
+        
+        if discount_price and price and discount_price >= price:
+            raise serializers.ValidationError({
+                'discount_price': 'Discount price must be less than the regular price.'
+            })
+        
+        return data
 
 
 class ProductComboItemReadSerializer(serializers.ModelSerializer):
@@ -119,12 +164,16 @@ class ProductComboSerializer(serializers.ModelSerializer):
     section_names = serializers.SerializerMethodField(read_only=True)
     discount_percentage = serializers.ReadOnlyField()
     display_title = serializers.ReadOnlyField()
+    final_price = serializers.ReadOnlyField()
+    total_original_price = serializers.ReadOnlyField()
+    total_weight = serializers.ReadOnlyField()
     
     class Meta:
         model = ProductCombo
         fields = [
             'id', 'name', 'slug', 'description', 'title', 'subtitle',
-            'display_title', 'price', 'discount_price', 'discount_percentage',
+            'display_title', 'price', 'discount_price', 'final_price',
+            'discount_percentage', 'total_original_price', 'total_weight',
             'image', 'is_active', 'is_featured', 'badge', 'created_at', 
             'items', 'sections', 'section_names'
         ]
@@ -192,7 +241,7 @@ class ProductComboSerializer(serializers.ModelSerializer):
                 })
             product_ids.append(product_id)
             
-            # Validate product exists
+            # Validate product exists and has sufficient stock
             try:
                 product = Product.objects.get(pk=product_id)
             except Product.DoesNotExist:
@@ -200,9 +249,17 @@ class ProductComboSerializer(serializers.ModelSerializer):
                     'items': f'Product with ID {product_id} does not exist.'
                 })
             
+            # Validate quantity
+            try:
+                quantity = max(1, int(quantity))
+            except (ValueError, TypeError):
+                raise serializers.ValidationError({
+                    'items': f'Invalid quantity for product {product_id}'
+                })
+            
             validated_items.append({
                 'product': product,
-                'quantity': max(1, int(quantity))
+                'quantity': quantity
             })
         
         if not validated_items:
@@ -265,7 +322,8 @@ class ProductComboSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Additional validation for price logic"""
-        price = data.get('price')
+        # Get price values from data or instance
+        price = data.get('price', getattr(self.instance, 'price', None))
         discount_price = data.get('discount_price')
         
         if discount_price and price and float(discount_price) >= float(price):

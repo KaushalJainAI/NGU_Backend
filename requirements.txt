@@ -12,3 +12,13 @@ drf-spectacular
 celery
 django_redis
 qrcode
+langgraph
+langchain
+dotenv
+fuzzywuzzy
+langchain-core
+langchain-perplexity
+python-Levenshtein
+django-storages
+boto3
+olefile

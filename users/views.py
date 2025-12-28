@@ -1,6 +1,7 @@
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .serializers import (
     UserRegistrationSerializer,
@@ -8,14 +9,29 @@ from .serializers import (
     CustomTokenObtainPairSerializer,
 )
 
+
+# ==================== CUSTOM THROTTLES ====================
+
+class LoginRateThrottle(AnonRateThrottle):
+    """Throttle for login attempts - prevents brute force attacks"""
+    scope = 'login'
+
+
+class RegisterRateThrottle(AnonRateThrottle):
+    """Throttle for registration - prevents mass account creation"""
+    scope = 'register'
+
+
 # ========== User Authentication Views ==========
 
 class UserRegistrationView(generics.CreateAPIView):
     """
     Register a new user
+    Rate limited: 3 attempts per minute
     """
     serializer_class = UserRegistrationSerializer
     permission_classes = [AllowAny]
+    throttle_classes = [RegisterRateThrottle]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -61,7 +77,7 @@ class ChangePasswordView(APIView):
 class CustomTokenObtainPairView(TokenObtainPairView):
     """
     Custom JWT token view with additional user data
+    Rate limited: 5 attempts per minute to prevent brute force
     """
     serializer_class = CustomTokenObtainPairSerializer
-
-
+    throttle_classes = [LoginRateThrottle]

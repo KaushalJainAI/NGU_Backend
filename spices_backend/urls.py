@@ -10,19 +10,21 @@ from users.views import (
     UserRegistrationView, UserProfileView, CustomTokenObtainPairView, ChangePasswordView
 )
 from products.views import (
-    CategoryViewSet, ProductViewSet, ComboProductViewSet, ProductImageViewSet, get_spice_forms
+    CategoryViewSet, ProductViewSet, ComboProductViewSet, ProductImageViewSet, get_spice_forms, unified_search
 )
-from cart.views import CartViewSet, ValidateCouponAPIView
+from cart.views import CartViewSet, ValidateCouponAPIView, FavoritesViewSet
 from orders.views import OrderViewSet
 from reviews.views import ReviewViewSet
 from payments.views import PaymentMethodViewSet
-from admin_panel.views import ReceivableAccountViewSet, DashboardViewSet, CouponViewSet, PolicyViewSet
+from admin_panel.views import ReceivableAccountViewSet, DashboardViewSet, CouponViewSet, PolicyViewSet, PaymentAccountView
+from support.views import ContactSubmissionViewSet, ChatSessionViewSet
 
 router = DefaultRouter()
 router.register(r'categories', CategoryViewSet, basename='categories')
 router.register(r'products', ProductViewSet, basename='products')
 router.register(r'combos', ComboProductViewSet, basename='combos')
 router.register(r'cart', CartViewSet, basename='cart')
+router.register(r'favorites', FavoritesViewSet, basename='favorites')
 router.register(r'orders', OrderViewSet, basename='orders')
 router.register(r'reviews', ReviewViewSet, basename='reviews')
 router.register(r'payment-methods', PaymentMethodViewSet, basename='payment-methods')
@@ -32,6 +34,10 @@ router.register(r'coupons', CouponViewSet, basename='coupon')
 
 router.register(r'policies', PolicyViewSet, basename='policy')
 router.register(r'dashboard', DashboardViewSet, basename='dashboard')
+
+# Support endpoints
+router.register(r'contact', ContactSubmissionViewSet, basename='contact')
+router.register(r'chat-sessions', ChatSessionViewSet, basename='chat-sessions')
 
 
 urlpatterns = [
@@ -49,13 +55,18 @@ urlpatterns = [
 
     # Coupon validation endpoint
     path('api/auth/validate-coupon/', ValidateCouponAPIView.as_view(), name='validate-coupon'),
+    
+    # Payment account for checkout (authenticated users)
+    path('api/payment-account/', PaymentAccountView.as_view(), name='payment-account'),
 
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 
      path('api/spice-forms/', get_spice_forms, name='spice-forms'),
+     path('api/search/', unified_search, name='unified-search' )
 ]
+
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
