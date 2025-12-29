@@ -1,7 +1,8 @@
+# syntax=docker/dockerfile:1.4
 # Backend Dockerfile - Django REST Framework Application
-# Multi-stage build for optimized production image
+# Optimized for faster rebuilds with BuildKit cache mounts
 
-# Stage 1: Base Python image
+# Stage 1: Base Python image with system dependencies
 FROM python:3.12-slim AS base
 
 # Set environment variables
@@ -11,22 +12,23 @@ ENV PYTHONUNBUFFERED=1
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (rarely changes - good cache)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Stage 2: Dependencies
+# Stage 2: Dependencies (only rebuilds when requirements.txt changes)
 FROM base AS dependencies
 
-# Copy requirements file
+# Copy ONLY requirements file first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies including gunicorn for production
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir gunicorn
+# Install Python dependencies with pip cache mount for faster rebuilds
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
+    && pip install -r requirements.txt \
+    && pip install gunicorn
 
 # Stage 3: Production
 FROM base AS production
@@ -39,12 +41,14 @@ COPY --from=dependencies /usr/local/bin /usr/local/bin
 RUN addgroup --gid 1001 --system appgroup \
     && adduser --uid 1001 --system --gid 1001 appuser
 
-# Copy application code
+# Create directories and set permissions BEFORE copying code
+RUN mkdir -p /app/media /app/staticfiles
+
+# Copy application code LAST (this layer changes most often)
 COPY . .
 
-# Create media directory and set permissions
-RUN mkdir -p /app/media /app/staticfiles \
-    && chown -R appuser:appgroup /app
+# Set permissions
+RUN chown -R appuser:appgroup /app
 
 # Switch to non-root user
 USER appuser

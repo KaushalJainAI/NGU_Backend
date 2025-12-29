@@ -13,7 +13,9 @@ class OrderCreateSerializer(serializers.Serializer):
 # ----- Shared item serializer for list/detail (aligned with frontend) -----
 
 class OrderItemListSerializer(serializers.ModelSerializer):
-    product_id = serializers.IntegerField(source="product.id", read_only=True)
+    item_type = serializers.CharField()
+    product_id = serializers.SerializerMethodField()
+    combo_id = serializers.SerializerMethodField()
     product_name = serializers.CharField()
     quantity = serializers.IntegerField()
     price = serializers.DecimalField(max_digits=10, decimal_places=2)
@@ -23,12 +25,20 @@ class OrderItemListSerializer(serializers.ModelSerializer):
         model = OrderItem
         fields = [
             "id",
+            "item_type",
             "product_id",
+            "combo_id",
             "product_name",
             "quantity",
             "price",
             "total",
         ]
+
+    def get_product_id(self, obj):
+        return obj.product.id if obj.product else None
+    
+    def get_combo_id(self, obj):
+        return obj.combo.id if obj.combo else None
 
     def get_total(self, obj):
         # Prefer final_price if present, else price * quantity
