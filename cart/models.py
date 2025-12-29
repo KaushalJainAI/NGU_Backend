@@ -114,12 +114,12 @@ class CartItem(models.Model):
             ),
             # Ensure quantity is always positive
             models.CheckConstraint(
-                check=models.Q(quantity__gte=1),
+                condition=models.Q(quantity__gte=1),
                 name='positive_quantity'
             ),
             # Ensure either product or combo is set, but not both
             models.CheckConstraint(
-                check=(
+                condition=(
                     models.Q(item_type='product', product__isnull=False, combo__isnull=True) |
                     models.Q(item_type='combo', combo__isnull=False, product__isnull=True)
                 ),

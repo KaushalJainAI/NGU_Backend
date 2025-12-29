@@ -2,9 +2,15 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.http import JsonResponse
 from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+
+
+# Simple health check view for Docker health checks
+def health_check(request):
+    return JsonResponse({'status': 'healthy', 'service': 'ngu-backend'})
 
 from users.views import (
     UserRegistrationView, UserProfileView, CustomTokenObtainPairView, ChangePasswordView
@@ -42,6 +48,9 @@ router.register(r'chat-sessions', ChatSessionViewSet, basename='chat-sessions')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    
+    # Health check endpoint for Docker
+    path('api/health/', health_check, name='health-check'),
 
     # Main API endpoints
     path('api/', include(router.urls)),
