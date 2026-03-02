@@ -5,6 +5,7 @@ import logging
 
 from .models import Product, ProductCombo, ProductSearchKB, ProductComboSearchKB, Category, ProductSection
 from .recommendations import SpiceSearchEngine
+from .utils import run_in_background
 from .cache import (
     invalidate_product_cache,
     invalidate_category_cache,
@@ -22,9 +23,9 @@ search_engine = SpiceSearchEngine()
 @receiver(post_save, sender=Product)
 def auto_update_product_on_save(sender, instance, created, **kwargs):
     """Update search KB and invalidate cache when product is saved."""
-    # Update search KB
+    # Update search KB asynchronously in background
     if instance.is_active and instance.stock > 0:
-        search_engine.ensure_search_kb(instance)
+        run_in_background(search_engine.a_ensure_search_kb, instance)
     
     # Invalidate caches
     invalidate_product_cache()
@@ -43,9 +44,9 @@ def invalidate_product_cache_on_delete(sender, instance, **kwargs):
 @receiver(post_save, sender=ProductCombo)
 def auto_update_combo_on_save(sender, instance, created, **kwargs):
     """Update search KB and invalidate cache when combo is saved."""
-    # Update search KB
+    # Update search KB asynchronously in background
     if instance.is_active:
-        search_engine.ensure_search_kb(instance)
+        run_in_background(search_engine.a_ensure_search_kb, instance)
     
     # Invalidate caches
     invalidate_combo_cache()
@@ -64,9 +65,9 @@ def invalidate_combo_cache_on_delete(sender, instance, **kwargs):
 @receiver(post_save, sender=Category)
 def refresh_category_on_save(sender, instance, **kwargs):
     """Refresh products and invalidate cache when category changes."""
-    # Refresh product search KBs
+    # Refresh product search KBs asynchronously in background
     for product in instance.products.filter(is_active=True):
-        search_engine.ensure_search_kb(product)
+        run_in_background(search_engine.a_ensure_search_kb, product)
     
     # Invalidate caches
     invalidate_category_cache()

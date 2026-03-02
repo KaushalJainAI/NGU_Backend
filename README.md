@@ -45,6 +45,23 @@ Backend/
 └── requirements.txt    # Dependencies
 ```
 
+## 📚 Official Documentation
+
+Detailed system documentation is located in the [`docs/`](./docs/) directory:
+
+**General Setup:**
+- [Setup Guide](./docs/SETUP-GUIDE.md)
+- [API Permissions](./docs/API_PERMISSIONS.md)
+- [Architecture Details](./docs/ARCHITECTURE.md)
+
+**System Components:**
+- [Database Schema](./docs/DATABASE_SCHEMA.md)
+- [AI Search Engine](./docs/AI_SEARCH_ENGINE.md)
+- [Payments Integration](./docs/PAYMENTS_INTEGRATION.md)
+- [Caching Strategy](./docs/CACHING_STRATEGY.md)
+- [S3 Storage Config](./docs/S3_STORAGE.md)
+- [Support Chat System](./docs/SUPPORT_CHAT.md)
+
 ## 🚀 Quick Start
 
 ### Local Development

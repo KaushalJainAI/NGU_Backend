@@ -8,18 +8,43 @@ from fuzzywuzzy import process, fuzz
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain.chat_models import init_chat_model
+from asgiref.sync import sync_to_async
 from dotenv import load_dotenv
+import asyncio
 import os
 
 from .models import ProductSearchKB, ProductComboSearchKB, Product, Category, ProductCombo, ProductSection
 
 load_dotenv()
-api_key = os.getenv('PERPLEXITY_API_KEY')
+api_key = os.getenv('LLM_API_KEY')
+provider = os.getenv('MODEL_PROVIDER')
+llm_model = os.getenv('LLM_MODEL')
 logger = logging.getLogger(__name__)
 
 class SpiceSearchEngine:
-    def __init__(self, model: str = "sonar"):
-        self.llm = init_chat_model(model, model_provider="perplexity", temperature=0.1, api_key=api_key)
+    def __init__(self, model: str = None):
+        # Fallbacks to ensure it doesn't crash if env vars are missing
+        self.provider = provider or "perplexity"
+        self.model_name = model or llm_model or "sonar"
+        
+        # Initialize Langchain Chat Model using unified interface
+        # Openrouter uses "openai" as the provider standard for Langchain initialization
+        if self.provider.lower() == 'openrouter':
+            from langchain_community.chat_models import ChatOpenAI
+            self.llm = ChatOpenAI(
+                model=self.model_name,
+                openai_api_key=api_key,
+                openai_api_base="https://openrouter.ai/api/v1",
+                temperature=0.1
+            )
+        else:
+            self.llm = init_chat_model(
+                self.model_name, 
+                model_provider=self.provider, 
+                temperature=0.1, 
+                api_key=api_key
+            )
+            
         self._product_cache = {}
     
     def generate_synonyms(self, name: str, context: str = "", is_combo: bool = False) -> List[str]:
@@ -106,6 +131,104 @@ class SpiceSearchEngine:
             kb.synonyms = synonyms
             kb.save()
             logger.info(f"{'Created' if created else f'Refreshed ({days_old}d)'} KB for {product_or_combo.name}")
+
+    async def a_generate_synonyms(self, name: str, context: str = "", is_combo: bool = False) -> List[str]:
+        """Asynchronous version of generate_synonyms"""
+        context_type = "spice combo" if is_combo else "individual spice"
+        
+        regional_prompt = ChatPromptTemplate.from_template("""
+        Generate 25+ e-commerce search terms Indians use for {context_type}: "{name}"
+        Context: {context}
+
+        REQUIRED: Include ALL regional Indian names, Hindi/English mixes, misspellings, 
+        weights (50g/100g/250g/500g), forms (powder/whole/raw), packs.
+
+        EXAMPLES:
+        TURMERIC/HALDI: ["haldi", "haldee", "haldi powder", "turmeric", "turmeric powder", 
+                        "haldipowder", "manjal", "pasupu", "halud", "haldhar", "arishina", 
+                        "haladi", "haridra", "haldi 100g", "turmeric 250g", "organic haldi"]
+        CHILLI/MIRCH: ["mirch", "chilli", "chili", "lal mirch", "green chilli", "mirchi powder", 
+                      "vip mirch", "red chilli", "hari mirch", "mirch powder 100g"]
+
+        COMMON PATTERNS: "{name} powder", "{name} 100g", "organic {name}", "{name} pack"
+
+        Return ONLY valid JSON: {{"synonyms": ["term1", "term2", ...]}} NO EXPLANATIONS
+        """)
+        
+        try:
+            chain = regional_prompt | self.llm | JsonOutputParser()
+            result = await chain.ainvoke({"name": name, "context": context, "context_type": context_type})
+            synonyms = result.get("synonyms", [])
+            
+            common_boosts = {
+                'haldi': ['haldi', 'haldee', 'haldhi', 'haldi powder', 'turmeric powder', 'manjal', 'pasupu'],
+                'turmeric': ['haldi', 'haldee', 'turmeric powder', 'haldi powder', 'haldi 100g'],
+                'mirch': ['mirch', 'chilli', 'chili', 'lal mirch', 'mirchi', 'vip mirch', 'red chilli'],
+                'chilli': ['mirch', 'chilli powder', 'green chilli', 'lal mirch', 'vip mirch']
+            }
+            
+            name_lower = name.lower()
+            for base, variants in common_boosts.items():
+                if base in name_lower:
+                    synonyms = list(set(variants + synonyms))
+                    break
+            
+            unique_synonyms = list(dict.fromkeys([s.strip().lower() for s in synonyms if s.strip()]))
+            return unique_synonyms[:25]
+        except Exception as e:
+            logger.error(f"Async synonym generation failed: {e}")
+            fallback = [name.lower(), f"{name} powder".lower(), f"{name} 100g".lower()]
+            
+            spice_fallbacks = {
+                'haldi': ['haldi', 'haldee', 'turmeric', 'manjal', 'pasupu'],
+                'turmeric': ['haldi', 'haldee', 'turmeric powder', 'haldi powder'],
+                'mirch': ['mirch', 'chilli', 'chili', 'lal mirch', 'vip mirch'],
+                'chilli': ['mirch', 'chilli powder', 'green chilli', 'lal mirch', 'vip mirch']
+            }
+            
+            for key, variants in spice_fallbacks.items():
+                if key in name_lower:
+                    fallback.extend(variants)
+                    break
+            return list(dict.fromkeys(fallback))[:15]
+
+    @sync_to_async
+    def _get_or_create_kb(self, kb_model, kwargs):
+        return kb_model.objects.get_or_create(**kwargs)
+
+    @sync_to_async
+    def _save_kb(self, kb):
+        kb.save()
+
+    async def a_ensure_search_kb(self, product_or_combo: Union[Product, ProductCombo]) -> None:
+        """Asynchronous version of ensure_search_kb"""
+        if isinstance(product_or_combo, Product):
+            kb_model, kb_field = ProductSearchKB, 'product'
+            context = f"{product_or_combo.category.name} {product_or_combo.spice_form}"
+            is_combo = False
+        elif isinstance(product_or_combo, ProductCombo):
+            kb_model, kb_field = ProductComboSearchKB, 'combo'
+            
+            @sync_to_async
+            def get_product_names():
+                return [p.name for p in product_or_combo.products.all()[:3]]
+            product_names = await get_product_names()
+            
+            context = f"Combo: {', '.join(product_names)}"
+            is_combo = True
+        else:
+            logger.error(f"Invalid type: {type(product_or_combo)}")
+            return
+        
+        kb, created = await self._get_or_create_kb(kb_model, {kb_field: product_or_combo})
+        days_old = (timezone.now() - kb.last_updated).days
+        
+        if created or days_old > 7:
+            synonyms = await self.a_generate_synonyms(product_or_combo.name, context, is_combo=is_combo)
+            kb.synonyms = synonyms
+            await self._save_kb(kb)
+            logger.info(f"{'Created' if created else f'Refreshed ({days_old}d)'} Async KB for {product_or_combo.name}")
+
     
     def unified_search(self, query: str, top_k: int = 20, score_threshold: int = 70) -> Dict[str, Any]:
         """SINGLE ENDPOINT: Unified search + recommendations ranked by score"""
