@@ -6,8 +6,8 @@ from decouple import config
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Security Settings
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-your-secret-key')
-DEBUG = config('DEBUG', default=True, cast=bool)
+SECRET_KEY = config('SECRET_KEY')
+DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
 
 # Application definition
@@ -117,7 +117,7 @@ if USE_S3:
     AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY')
     AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME')
     AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='ap-south-1')
-    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    AWS_S3_SIGNATURE_VERSION = config('AWS_S3_SIGNATURE_VERSION', default='s3v4')
     
     AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com'
     AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
@@ -152,6 +152,10 @@ else:
     MEDIA_URL = '/media/'
     MEDIA_ROOT = BASE_DIR / 'media'
 
+# File Upload Configuration (500MB limit for photos/videos)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
+FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000
+
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -183,17 +187,18 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '1000/hour',      # Anonymous users: 100 requests per hour
-        'user': '10000/hour',     # Authenticated users: 1000 requests per hour
+        'anon': '1000/hour',      # Anonymous users: 1000 requests per hour
+        'user': '10000/hour',     # Authenticated users: 10000 requests per hour
         'login': '5/minute',     # Login attempts: 5 per minute
         'register': '3/minute',  # Registration: 3 per minute
         'contact': '5/hour',     # Contact form: 5 per hour
+        'password_reset': '10/day',  # Password reset OTP: 10 per day
     }
 }
 
 # JWT Configuration
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
@@ -220,7 +225,7 @@ CORS_ALLOWED_ORIGINS = config(
 ).split(',')
 
 # WARNING: Set to False in production! True bypasses the whitelist above
-CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=DEBUG, cast=bool)
+CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
 
 CORS_ALLOW_METHODS = [
@@ -293,7 +298,7 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'DEBUG',
+        'level': 'INFO',
     },
     # S3/AWS logging - captures upload failures and connection issues
     'loggers': {
@@ -376,3 +381,5 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
+
+# Triggering auto-reload again to pick up .env changes

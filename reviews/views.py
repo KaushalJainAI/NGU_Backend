@@ -10,6 +10,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get_queryset(self):
+        user = self.request.user
         queryset = Review.objects.all().select_related('user', 'product', 'combo')
         
         # Filter by product or combo
@@ -20,8 +21,15 @@ class ReviewViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(product_id=product_id, item_type='product')
         elif combo_id:
             queryset = queryset.filter(combo_id=combo_id, item_type='combo')
-        elif self.request.user.is_authenticated and self.action == 'list':
-            queryset = queryset.filter(user=self.request.user)
+        elif user.is_authenticated and self.action == 'list':
+            queryset = queryset.filter(user=user)
+
+        # SECURITY: If not staff, ensure user can only edit/delete their own reviews
+        if not (user.is_authenticated and user.is_staff) and self.action not in ['list', 'retrieve']:
+            if user.is_authenticated:
+                queryset = queryset.filter(user=user)
+            else:
+                queryset = queryset.none()
             
         return queryset.order_by('-created_at')
 

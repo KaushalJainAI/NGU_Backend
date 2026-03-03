@@ -132,7 +132,8 @@ class TestProductAPI:
             'description': 'A new product',
             'price': '199.99',
             'stock': 50,
-            'weight': '100g',
+            'weight': 100,
+            'unit': 'g',
             'spice_form': 'powder'
         }
         response = admin_client.post(self.base_url, data, format='json')
@@ -146,7 +147,8 @@ class TestProductAPI:
             'category': test_category.id,
             'price': '99.99',
             'stock': 10,
-            'weight': '50g'
+            'weight': 50,
+            'unit': 'g'
         }
         response = authenticated_client.post(self.base_url, data, format='json')
         assert response.status_code == status.HTTP_403_FORBIDDEN
@@ -202,7 +204,8 @@ class TestProductEdgeCases:
             'category': test_category.id,
             'price': '-100.00',
             'stock': 10,
-            'weight': '100g'
+            'weight': 100,
+            'unit': 'g'
         }
         response = admin_client.post(self.base_url, data, format='json')
         # Should be 400, not 500
@@ -215,7 +218,8 @@ class TestProductEdgeCases:
             'category': test_category.id,
             'price': '0.00',
             'stock': 10,
-            'weight': '100g'
+            'weight': 100,
+            'unit': 'g'
         }
         response = admin_client.post(self.base_url, data, format='json')
         assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -227,7 +231,8 @@ class TestProductEdgeCases:
             'category': test_category.id,
             'price': '100.00',
             'stock': -5,
-            'weight': '100g'
+            'weight': 100,
+            'unit': 'g'
         }
         response = admin_client.post(self.base_url, data, format='json')
         assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -239,7 +244,8 @@ class TestProductEdgeCases:
             'category': test_category.id,
             'price': '99999999.99',
             'stock': 1,
-            'weight': '100g'
+            'weight': 100,
+            'unit': 'g'
         }
         response = admin_client.post(self.base_url, data, format='json')
         assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -252,7 +258,8 @@ class TestProductEdgeCases:
             'price': '100.00',
             'discount_price': '150.00',  # Higher than price
             'stock': 10,
-            'weight': '100g'
+            'weight': 100,
+            'unit': 'g'
         }
         response = admin_client.post(self.base_url, data, format='json')
         # Should validate and reject, not 500
@@ -265,7 +272,8 @@ class TestProductEdgeCases:
             'category': 999999,
             'price': '100.00',
             'stock': 10,
-            'weight': '100g'
+            'weight': 100,
+            'unit': 'g'
         }
         response = admin_client.post(self.base_url, data, format='json')
         assert response.status_code == status.HTTP_400_BAD_REQUEST

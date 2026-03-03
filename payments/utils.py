@@ -6,8 +6,8 @@ from decimal import Decimal
 def generate_upi_qr_code(account, amount: Decimal, transaction_note: str = ""):
     """Generate UPI QR code for payment"""
     
-    # Standard UPI URI format
-    upi_uri = (
+    # Standard UPI URL format
+    upi_url = (
         f"upi://pay?"
         f"pa={account.upi_id}&"
         f"pn={account.account_holder_name}&"
@@ -16,7 +16,7 @@ def generate_upi_qr_code(account, amount: Decimal, transaction_note: str = ""):
     )
     
     if transaction_note:
-        upi_uri += f"&tn={transaction_note.replace(' ', '%20')}"
+        upi_url += f"&tn={transaction_note.replace(' ', '%20')}"
     
     # Generate QR code
     qr = qrcode.QRCode(
@@ -25,7 +25,7 @@ def generate_upi_qr_code(account, amount: Decimal, transaction_note: str = ""):
         box_size=10,
         border=4,
     )
-    qr.add_data(upi_uri)
+    qr.add_data(upi_url)
     qr.make(fit=True)
     
     img = qr.make_image(fill_color="black", back_color="white")
@@ -35,4 +35,4 @@ def generate_upi_qr_code(account, amount: Decimal, transaction_note: str = ""):
     img.save(buffer, format='PNG')
     img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
     
-    return img_base64, upi_uri
+    return img_base64, upi_url

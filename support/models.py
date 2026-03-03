@@ -1,6 +1,19 @@
 from django.db import models
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from orders.models import Order
+from spices_backend.validators import validate_file_size, validate_image_extension, validate_video_extension
+
+def validate_chat_attachment(value):
+    """Validator for chat attachments"""
+    try:
+        validate_image_extension(value)
+    except ValidationError:
+        try:
+            validate_video_extension(value)
+        except ValidationError:
+            raise ValidationError("Unsupported file extension. Only images and videos are allowed.")
+    validate_file_size(value)
 
 
 class ContactSubmission(models.Model):
@@ -117,6 +130,16 @@ class ChatSession(models.Model):
         super().save(*args, **kwargs)
 
 
+import uuid
+import os
+
+def get_chat_attachment_path(instance, filename):
+    """Generate a secure, random filename for chat attachments"""
+    ext = os.path.splitext(filename)[1]
+    secure_filename = f"{uuid.uuid4()}{ext}"
+    return f"chat_attachments/{instance.session.session_id}/{secure_filename}"
+
+
 class ChatMessage(models.Model):
     """Individual messages within a chat session"""
     SENDER_CHOICES = [
@@ -135,8 +158,12 @@ class ChatMessage(models.Model):
     sender_name = models.CharField(max_length=100, blank=True, default='')
     message = models.TextField()
     
-    # Optional: attachment support
-    attachment = models.FileField(upload_to='chat_attachments/', null=True, blank=True)
+    attachment = models.FileField(
+        upload_to=get_chat_attachment_path, 
+        null=True, 
+        blank=True,
+        validators=[validate_chat_attachment]
+    )
     
     # Read status for admin messages
     is_read = models.BooleanField(default=False)

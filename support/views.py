@@ -105,21 +105,10 @@ class ChatSessionViewSet(viewsets.ModelViewSet):
                 # For anonymous users:
                 # - Allow retrieving session by session_id query param
                 # - Allow accessing session by pk (for messages action on detail routes)
-                session_id = self.request.query_params.get('session_id')
-                pk = self.kwargs.get('pk')
-                
                 if session_id:
                     qs = qs.filter(session_id=session_id)
-                elif pk:
-                    # Validate pk is a valid integer to prevent 500 errors
-                    try:
-                        pk_int = int(pk)
-                        # Allow access by pk but only for sessions without a user (guest sessions)
-                        qs = qs.filter(pk=pk_int, user__isnull=True)
-                    except (ValueError, TypeError):
-                        # Invalid pk (e.g., 'undefined', 'null', etc.) - return empty queryset
-                        qs = qs.none()
                 else:
+                    # Anonymous users can only access sessions via valid session_id (not PK)
                     qs = qs.none()
         
         return qs.prefetch_related('messages')

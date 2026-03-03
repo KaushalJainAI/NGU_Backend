@@ -9,18 +9,22 @@ def generate_upi_qr_code(account, amount=None, transaction_note="Payment"):
     :param account: ReceivableAccount instance
     :param amount: Optional payment amount (Decimal/float/str)
     :param transaction_note: Optional transaction note text
-    :return: base64-encoded PNG image of the QR code, UPI payment URI string
+    :return: base64-encoded PNG image of the QR code, UPI payment URL string
     """
-    # Compose UPI URI
+    from urllib.parse import quote
+    
     # Mandatory fields: pa (upi_id), pn (account_holder_name)
     # Optional: am (amount), tn (transaction note), cu (currency)
     
-    upi_uri = f"upi://pay?pa={account.upi_id}&pn={account.account_holder_name}"
+    pn_encoded = quote(account.account_holder_name)
+    tn_encoded = quote(transaction_note)
+    
+    upi_url = f"upi://pay?pa={account.upi_id}&pn={pn_encoded}"
     
     if amount is not None:
-        upi_uri += f"&am={amount}"
+        upi_url += f"&am={amount}"
     
-    upi_uri += f"&cu=INR&tn={transaction_note}"
+    upi_url += f"&cu=INR&tn={tn_encoded}"
     
     # Generate QR code
     qr = qrcode.QRCode(
@@ -29,7 +33,7 @@ def generate_upi_qr_code(account, amount=None, transaction_note="Payment"):
         box_size=10,
         border=4,
     )
-    qr.add_data(upi_uri)
+    qr.add_data(upi_url)
     qr.make(fit=True)
     
     img = qr.make_image(fill_color="black", back_color="white")

@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+65605# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,9 +22,9 @@ db.sqlite3
 /staticfiles/
 # If static files are collected into a specific folder, ignore that as well
 
-# Django migrations
-*/migrations/*.py
-*/migrations/*.pyc
+# Django migrations - DO NOT IGNORE, migrations must be committed
+# *.py files in /migrations/ are tracked for deployment
+!*/migrations/__init__.py
 
 # OS and system files
 .DS_Store

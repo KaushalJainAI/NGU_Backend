@@ -176,14 +176,23 @@ class OrderViewSet(viewsets.ModelViewSet):
             if cart_item.item_type == 'product' and cart_item.product:
                 item = cart_item.product
                 item_name = cart_item.product.name
-                item_weight = getattr(cart_item.product, 'weight', '')
+                item_weight = cart_item.product.formatted_weight
+                
                 item_stock = cart_item.product.stock
                 item_price = cart_item.product.final_price if hasattr(cart_item.product, 'final_price') else cart_item.product.price
                 product_ref = cart_item.product
             elif cart_item.item_type == 'combo' and cart_item.combo:
                 item = cart_item.combo
                 item_name = cart_item.combo.name
-                item_weight = getattr(cart_item.combo, 'weight', 'Combo')
+                # Use combo's own weight if available
+                if cart_item.combo.weight and cart_item.combo.unit:
+                    w = float(cart_item.combo.weight)
+                    if w.is_integer():
+                        w = int(w)
+                    item_weight = f"{w}{cart_item.combo.unit}"
+                else:
+                    item_weight = "Combo"
+                
                 item_stock = getattr(cart_item.combo, 'stock', 999)  # Combos may not have stock limit
                 item_price = cart_item.combo.final_price if hasattr(cart_item.combo, 'final_price') else cart_item.combo.price
                 product_ref = None  # Combos don't have a product reference
@@ -340,8 +349,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             # Restore stock
             for item in order.items.select_related('product').all():
-                item.product.stock += item.quantity
-                item.product.save(update_fields=['stock'])
+                if item.product:
+                    item.product.stock += item.quantity
+                    item.product.save(update_fields=['stock'])
             
             order.status = 'cancelled'
             if hasattr(order, 'cancelled_at'):

@@ -57,7 +57,7 @@ class ProductAdmin(admin.ModelAdmin):
             'fields': ('name', 'slug', 'category', 'description')
         }),
         ('Spice Details', {
-            'fields': ('spice_form', 'weight', 'origin_country', 'organic', 'shelf_life', 'ingredients')
+            'fields': ('spice_form', 'weight', 'unit', 'origin_country', 'organic', 'shelf_life', 'ingredients')
         }),
         ('Pricing & Stock', {
             'fields': ('price', 'discount_price', 'stock')
@@ -98,8 +98,8 @@ class ProductComboAdmin(admin.ModelAdmin):
             'fields': ('title', 'subtitle'),
             'description': 'Custom titles for marketing and display purposes'
         }),
-        ('Pricing', {
-            'fields': ('price', 'discount_price')
+        ('Pricing & Unit', {
+            'fields': ('price', 'discount_price', 'unit')
         }),
         ('Media', {
             'fields': ('image',)

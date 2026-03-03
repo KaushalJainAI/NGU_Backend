@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from spices_backend.validators import validate_file_size, validate_image_extension
 
 
 class User(AbstractUser):
@@ -12,7 +13,12 @@ class User(AbstractUser):
     city = models.CharField(max_length=100, blank=True)
     state = models.CharField(max_length=100, blank=True)
     pincode = models.CharField(max_length=10, blank=True)
-    profile_picture = models.ImageField(upload_to='profiles/', blank=True, null=True)
+    profile_picture = models.ImageField(
+        upload_to='profiles/', 
+        blank=True, 
+        null=True,
+        validators=[validate_file_size, validate_image_extension]
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -32,4 +38,34 @@ class User(AbstractUser):
         """Returns complete formatted address"""
         parts = [self.address, self.city, self.state, self.pincode]
         return ', '.join(filter(None, parts))
+
+
+class PasswordResetOTP(models.Model):
+    """
+    Model to store OTPs for password reset requests.
+    """
+    MAX_FAILED_ATTEMPTS = 5
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_otps')
+    otp_code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+    failed_attempts = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user.email} - {self.otp_code}"
+    
+    @property
+    def is_expired(self):
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+    
+    @property
+    def is_locked(self):
+        """OTP is locked after too many failed verification attempts."""
+        return self.failed_attempts >= self.MAX_FAILED_ATTEMPTS
 

@@ -30,7 +30,7 @@ class SpiceSearchEngine:
         # Initialize Langchain Chat Model using unified interface
         # Openrouter uses "openai" as the provider standard for Langchain initialization
         if self.provider.lower() == 'openrouter':
-            from langchain_community.chat_models import ChatOpenAI
+            from langchain_openai import ChatOpenAI
             self.llm = ChatOpenAI(
                 model=self.model_name,
                 openai_api_key=api_key,
@@ -312,7 +312,7 @@ class SpiceSearchEngine:
             'id': p.id, 'name': p.name, 'slug': p.slug, 'type': 'product',
             'category': p.category.name, 'spice_form': p.spice_form,
             'price': float(p.final_price), 'original_price': float(p.price),
-            'discount': p.discount_percentage, 'weight': p.weight,
+            'discount': p.discount_percentage, 'weight': p.weight, 'unit': p.unit,
             'image': p.image.url if p.image else None,
             'score': scored_scores.get(p.id, 0), 'score_type': 'direct',
             'in_stock': p.stock, 'is_featured': p.is_featured
@@ -414,6 +414,7 @@ class SpiceSearchEngine:
             'category': product.category.name,
             'spice_form': product.spice_form,
             'weight': product.weight,
+            'unit': product.unit,
             'organic': getattr(product, 'organic', False),
             'in_stock': product.stock,
             'is_featured': product.is_featured,

@@ -3,6 +3,7 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 from django.utils.text import slugify
 from django.db.models import Sum, Avg, Count
+from spices_backend.validators import validate_file_size, validate_image_extension
 
 
 class ProductSection(models.Model):
@@ -61,7 +62,7 @@ class ProductSection(models.Model):
             is_active=True
         ).select_related('category').only(
             'id', 'name', 'slug', 'image', 'price', 'discount_price',
-            'weight', 'badge', 'is_featured', 'category__name'
+            'weight', 'unit', 'badge', 'is_featured', 'category__name'
         )[:self.max_products]
     
     def get_combos(self):
@@ -70,7 +71,7 @@ class ProductSection(models.Model):
             is_active=True
         ).only(
             'id', 'name', 'slug', 'title', 'image', 'price', 'discount_price',
-            'badge', 'is_featured'
+            'badge', 'weight', 'unit', 'is_featured'
         )[:self.max_products]
 
 
@@ -79,7 +80,12 @@ class Category(models.Model):
     name = models.CharField(max_length=200, unique=True)
     slug = models.SlugField(max_length=200, unique=True, blank=True)
     description = models.TextField(blank=True)
-    image = models.ImageField(upload_to='categories/', blank=True, null=True)
+    image = models.ImageField(
+        upload_to='categories/', 
+        blank=True, 
+        null=True,
+        validators=[validate_file_size, validate_image_extension]
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -109,6 +115,17 @@ class Product(models.Model):
         ('powder', 'Powder'),
         ('crushed', 'Crushed'),
         ('mixed', 'Mixed/Blend'),
+    ]
+    
+    UNIT_CHOICES = [
+        ('g', 'Grams'),
+        ('kg', 'Kilograms'),
+        ('ml', 'Milliliters'),
+        ('l', 'Liters'),
+        ('pc', 'Piece'),
+        ('box', 'Box'),
+        ('pack', 'Pack'),
+        ('combo', 'Combo'),
     ]
     
     id = models.AutoField(primary_key=True)
@@ -145,9 +162,19 @@ class Product(models.Model):
         default=0,
         validators=[MinValueValidator(0)]
     )
-    weight = models.CharField(
-        max_length=50, 
-        help_text='e.g., 100g, 250g, 500g, 1kg'
+    weight = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text='Numerical value of the weight'
+    )
+    unit = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        choices=UNIT_CHOICES,
+        help_text='e.g., pc, box, kg'
     )
     
     # Product Details
@@ -161,7 +188,10 @@ class Product(models.Model):
     ingredients = models.TextField(blank=True)
     
     # Media
-    image = models.ImageField(upload_to='products/')
+    image = models.ImageField(
+        upload_to='products/',
+        validators=[validate_file_size, validate_image_extension]
+    )
     
     # Flags
     is_active = models.BooleanField(default=True)
@@ -204,7 +234,21 @@ class Product(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(f"{self.name}-{self.weight}")
+            # Generate base slug from name and weight (handle None weight)
+            weight_part = f"-{self.weight}" if self.weight else ""
+            base_slug = slugify(f"{self.name}{weight_part}")
+            
+            # Fallback if slugify results in empty string
+            if not base_slug:
+                base_slug = "product"
+                
+            slug = base_slug
+            counter = 1
+            # Check for name collisions and ensure uniqueness
+            while Product.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = slug
         
         # Run validation
         self.full_clean()
@@ -228,6 +272,16 @@ class Product(models.Model):
         """Check if product is in stock"""
         return self.stock > 0
 
+    @property
+    def formatted_weight(self):
+        """Returns weight with unit, formatted to remove trailing zeros (e.g., '250g')"""
+        if self.weight and self.unit:
+            w = float(self.weight)
+            if w.is_integer():
+                w = int(w)
+            return f"{w}{self.unit}"
+        return str(self.weight or "")
+
 
 class ProductImage(models.Model):
     """Additional images for products (gallery)"""
@@ -236,7 +290,10 @@ class ProductImage(models.Model):
         on_delete=models.CASCADE, 
         related_name='images'
     )
-    image = models.ImageField(upload_to='products/gallery/')
+    image = models.ImageField(
+        upload_to='products/gallery/',
+        validators=[validate_file_size, validate_image_extension]
+    )
     alt_text = models.CharField(max_length=200, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -282,10 +339,29 @@ class ProductCombo(models.Model):
         null=True,
         validators=[MinValueValidator(0)]
     )
-    image = models.ImageField(upload_to='combos/', blank=True, null=True)
+    image = models.ImageField(
+        upload_to='combos/', 
+        blank=True, 
+        null=True,
+        validators=[validate_file_size, validate_image_extension]
+    )
     is_active = models.BooleanField(default=True)
     is_featured = models.BooleanField(default=False)
     badge = models.CharField(max_length=20, blank=True)
+    weight = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text='Numerical value of the weight'
+    )
+    unit = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        choices=Product.UNIT_CHOICES,
+        help_text='e.g., pc, box, kg'
+    )
     
     # Section placement - ManyToMany relationship
     sections = models.ManyToManyField(
@@ -349,8 +425,16 @@ class ProductCombo(models.Model):
     @property
     def total_weight(self):
         """Concat weights of products in the combo"""
-        weights = self.products.values_list('weight', flat=True)
-        return ', '.join(set(weights)) if weights else ''
+        # Formatted string like "250g, 500g"
+        weights = []
+        for product in self.products.all():
+            if product.weight and product.unit:
+                # Format to remove trailing zeros if it's an integer
+                w = float(product.weight)
+                if w.is_integer():
+                    w = int(w)
+                weights.append(f"{w}{product.unit}")
+        return ', '.join(weights) if weights else ''
     
     @property
     def display_title(self):

@@ -13,7 +13,8 @@ def health_check(request):
     return JsonResponse({'status': 'healthy', 'service': 'ngu-backend'})
 
 from users.views import (
-    UserRegistrationView, UserProfileView, CustomTokenObtainPairView, ChangePasswordView
+    UserRegistrationView, UserProfileView, CustomTokenObtainPairView, ChangePasswordView,
+    PasswordResetRequestView, PasswordResetVerifyView, PasswordResetConfirmView
 )
 from products.views import (
     CategoryViewSet, ProductViewSet, ComboProductViewSet, ProductImageViewSet, get_spice_forms, unified_search
@@ -61,6 +62,9 @@ urlpatterns = [
     path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/auth/profile/', UserProfileView.as_view(), name='profile'),
     path('api/auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+    path('api/auth/password-reset-request/', PasswordResetRequestView.as_view(), name='password-reset-request'),
+    path('api/auth/password-reset-verify/', PasswordResetVerifyView.as_view(), name='password-reset-verify'),
+    path('api/auth/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
 
     # Coupon validation endpoint
     path('api/auth/validate-coupon/', ValidateCouponAPIView.as_view(), name='validate-coupon'),

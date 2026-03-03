@@ -425,9 +425,6 @@ class CartViewSet(viewsets.ViewSet):
 
 class ValidateCouponAPIView(APIView):
     def post(self, request):
-        print(f"Received request data: {request.data}")  # Debug log
-        print(f"Request content type: {request.content_type}")  # Debug log
-        
         serializer = ValidateCouponSerializer(data=request.data)
         if serializer.is_valid():
             code = serializer.validated_data['code']
@@ -451,7 +448,6 @@ class ValidateCouponAPIView(APIView):
                     'message': 'Coupon does not exist.'
                 }, status=status.HTTP_200_OK)
         
-        print(f"Serializer errors: {serializer.errors}")  # Debug log
         return Response({
             'valid': False,
             'message': 'Invalid request data.',
@@ -502,7 +498,7 @@ class CartPaymentQRView(APIView):
         except ReceivableAccount.DoesNotExist:
             return Response({'error': 'Receivable account not found.'}, status=404)
 
-        qr_base64, upi_uri = generate_upi_qr_code(
+        qr_base64, upi_url = generate_upi_qr_code(
             account=account,
             amount=total_amount,
             transaction_note=f"Cart Payment{f' (Coupon: {coupon_code})' if coupon_code else ''}"
@@ -510,7 +506,7 @@ class CartPaymentQRView(APIView):
 
         return Response({
             # 'qr_code_base64': qr_base64,
-            'upi_uri': upi_uri,
+            'upi_url': upi_url,
             'amount': float(total_amount),
             'discount_percent': discount_applied,
             "summary": summary,
