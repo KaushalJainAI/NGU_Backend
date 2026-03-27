@@ -181,10 +181,7 @@ class CartItem(models.Model):
         if errors:
             raise ValidationError(errors)
     
-    def save(self, *args, **kwargs):
-        """Override save to call clean method"""
-        self.full_clean()
-        super().save(*args, **kwargs)
+
 
 
 class Favorite(models.Model):

@@ -46,9 +46,9 @@ class ReviewViewSet(viewsets.ModelViewSet):
             if Review.objects.filter(user=self.request.user, combo=combo, item_type='combo').exists():
                 raise serializers.ValidationError({"error": "You have already reviewed this combo"})
         
-        # ENFORCE verified purchase - user must have a shipped/delivered order with this item
+        # ENFORCE verified purchase - user must have a confirmed/shipped/delivered order with this item
         has_purchased = False
-        allowed_statuses = ['shipped', 'delivered', 'delivering']
+        allowed_statuses = ['confirmed', 'processing', 'shipped', 'delivered', 'delivering']
         
         if item_type == 'product' and product:
             has_purchased = OrderItem.objects.filter(
@@ -63,10 +63,10 @@ class ReviewViewSet(viewsets.ModelViewSet):
                 order__status__in=allowed_statuses
             ).exists()
         
-        # Reject review if user hasn't purchased and received the item
+        # Reject review if user hasn't purchased the item
         if not has_purchased:
             raise serializers.ValidationError({
-                "error": "You can only review items from orders that have been shipped or delivered"
+                "error": "You can only review items from orders that have been confirmed or delivered"
             })
         
         serializer.save(user=self.request.user, is_verified_purchase=True)

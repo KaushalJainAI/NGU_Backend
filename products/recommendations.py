@@ -14,6 +14,7 @@ import asyncio
 import os
 
 from .models import ProductSearchKB, ProductComboSearchKB, Product, Category, ProductCombo, ProductSection
+from .serializers import SearchProductSerializer, SearchComboSerializer
 
 load_dotenv()
 api_key = os.getenv('LLM_API_KEY')
@@ -307,20 +308,16 @@ class SpiceSearchEngine:
         return results[:top_k]
     
     def _format_products(self, products, scored_scores: Dict) -> List[Dict]:
-        """Batch formatting for speed"""
-        return [{
-            'id': p.id, 'name': p.name, 'slug': p.slug, 'type': 'product',
-            'category': p.category.name, 'spice_form': p.spice_form,
-            'price': float(p.final_price), 'original_price': float(p.price),
-            'discount': p.discount_percentage, 'weight': p.weight, 'unit': p.unit,
-            'image': p.image.url if p.image else None,
-            'score': scored_scores.get(p.id, 0), 'score_type': 'direct',
-            'in_stock': p.stock, 'is_featured': p.is_featured
-        } for p in products]
+        """Batch formatting via serializer for safety"""
+        serialized = SearchProductSerializer(products, many=True).data
+        # Merge score info into each serialized item
+        for item in serialized:
+            item['score'] = scored_scores.get(item['id'], 0)
+            item['score_type'] = 'direct'
+        return serialized
     
     def _fuzzy_search_combos_fast(self, query: str, top_k: int, threshold: int) -> List[Dict]:
         """Optimized combo search"""
-        results = []
         combo_kbs = ProductComboSearchKB.objects.select_related('combo').filter(
             combo__is_active=True
         )[:100]
@@ -353,16 +350,11 @@ class SpiceSearchEngine:
             id__in=top_ids, is_active=True
         ).prefetch_related('products')
         
-        for c in combos:
-            results.append({
-                'id': c.id, 'name': c.display_title or c.name, 'slug': c.slug, 'type': 'combo',
-                'price': float(c.final_price), 'original_price': float(c.price),
-                'discount': c.discount_percentage, 'products_count': c.products.count(),
-                'image': c.image.url if c.image else None,
-                'score': scored_combos.get(c.id, 0), 'score_type': 'direct',
-                'products': [p.name for p in c.products.all()[:3]]
-            })
-        return results
+        serialized = SearchComboSerializer(combos, many=True).data
+        for item in serialized:
+            item['score'] = scored_combos.get(item['id'], 0)
+            item['score_type'] = 'direct'
+        return serialized
     
     def _other_recommendations(self, query: str, top_k: int) -> List[Dict]:
         """Fast category + trending fallback"""
@@ -407,16 +399,5 @@ class SpiceSearchEngine:
         return []
     
     def _product_base_dict(self, product):
-        return {
-            'name': product.name,
-            'slug': product.slug,
-            'type': 'product',
-            'category': product.category.name,
-            'spice_form': product.spice_form,
-            'weight': product.weight,
-            'unit': product.unit,
-            'organic': getattr(product, 'organic', False),
-            'in_stock': product.stock,
-            'is_featured': product.is_featured,
-            'discount': getattr(product, 'discount_percentage', 0)
-        }
+        """Delegate to serializer for safe attribute access."""
+        return SearchProductSerializer(product).data

@@ -2,7 +2,8 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import AnonRateThrottle
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from django.conf import settings
 from .serializers import (
     UserRegistrationSerializer,
     UserSerializer,
@@ -93,6 +94,67 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
     throttle_classes = [LoginRateThrottle]
 
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            access_token = response.data['access']
+            refresh_token = response.data['refresh']
+            
+            # Set access token in secure HttpOnly cookie
+            response.set_cookie(
+                key='access_token',
+                value=access_token,
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite='Lax',
+                max_age=3600 # 1 hour
+            )
+            # Set refresh token in secure HttpOnly cookie
+            response.set_cookie(
+                key='refresh_token',
+                value=refresh_token,
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite='Lax',
+                max_age=3600 * 24 * 7 # 7 days
+            )
+        return response
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    """
+    Custom Token Refresh View to update cookies
+    """
+    def post(self, request, *args, **kwargs):
+        # Allow refresh from cookie if not in body
+        refresh_from_cookie = request.COOKIES.get('refresh_token')
+        if not request.data.get('refresh') and refresh_from_cookie:
+            request.data['refresh'] = refresh_from_cookie
+            
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            access_token = response.data['access']
+            response.set_cookie(
+                key='access_token',
+                value=access_token,
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite='Lax',
+                max_age=3600
+            )
+            # If rotation is on, we'll get a new refresh token
+            if 'refresh' in response.data:
+                refresh_token = response.data['refresh']
+                response.set_cookie(
+                    key='refresh_token',
+                    value=refresh_token,
+                    httponly=True,
+                    secure=not settings.DEBUG,
+                    samesite='Lax',
+                    max_age=3600 * 24 * 7
+                )
+        return response
+
 
 # ==================== PASSWORD RESET VIEWS ====================
 import random
@@ -142,24 +204,26 @@ class PasswordResetRequestView(APIView):
             
             # Create new OTP record (expires in 10 minutes)
             expires_at = timezone.now() + timedelta(minutes=10)
-            PasswordResetOTP.objects.create(
+            otp_record = PasswordResetOTP(
                 user=user,
-                otp_code=otp_code,
                 expires_at=expires_at
             )
+            otp_record.set_otp(otp_code)
+            otp_record.save()
             
-            # Send Email
-            send_mail(
-                subject='Password Reset OTP - NGU Spices',
-                message=f'Your OTP for password reset is: {otp_code}\n\nThis code will expire in 10 minutes.',
-                from_email=settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else settings.EMAIL_HOST_USER,
-                recipient_list=[user.email],
-                fail_silently=False,
-            )
+            # Send Email asynchronously to prevent blocking and timing attacks
+            import threading
+            threading.Thread(target=send_mail, kwargs={
+                'subject': 'Password Reset OTP - NGU Spices',
+                'message': f'Your OTP for password reset is: {otp_code}\n\nThis code will expire in 10 minutes.',
+                'from_email': settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else settings.EMAIL_HOST_USER,
+                'recipient_list': [user.email],
+                'fail_silently': True,
+            }).start()
             
         except User.DoesNotExist:
-            # Prevent email enumeration by returning success even if user doesn't exist
-            pass
+            # Prevent email enumeration via timing attack
+            User().set_password('dummy_password')
             
         return Response(
             {'detail': 'If an account exists with this email, an OTP has been sent.'}, 
@@ -196,7 +260,7 @@ class PasswordResetVerifyView(APIView):
                 return Response({'detail': 'Too many failed attempts. Please request a new OTP.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
             
             # Check if the submitted OTP code matches
-            if otp_record.otp_code != otp_code:
+            if not otp_record.check_otp(otp_code):
                 otp_record.failed_attempts += 1
                 otp_record.save(update_fields=['failed_attempts'])
                 remaining = PasswordResetOTP.MAX_FAILED_ATTEMPTS - otp_record.failed_attempts
@@ -205,7 +269,15 @@ class PasswordResetVerifyView(APIView):
                 else:
                     return Response({'detail': 'Too many failed attempts. Please request a new OTP.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
                 
-            return Response({'detail': 'OTP verified successfully. You may proceed to reset password.'}, status=status.HTTP_200_OK)
+            import uuid
+            otp_record.is_used = True
+            otp_record.reset_token = str(uuid.uuid4())
+            otp_record.save(update_fields=['is_used', 'reset_token'])
+
+            return Response({
+                'detail': 'OTP verified successfully. You may proceed to reset password.',
+                'reset_token': otp_record.reset_token
+            }, status=status.HTTP_200_OK)
             
         except (User.DoesNotExist, PasswordResetOTP.DoesNotExist):
             return Response({'detail': 'Invalid OTP or email.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -223,39 +295,27 @@ class PasswordResetConfirmView(APIView):
         serializer.is_valid(raise_exception=True)
         
         email = serializer.validated_data['email']
-        otp_code = serializer.validated_data['otp_code']
+        reset_token = serializer.validated_data['reset_token']
         new_password = serializer.validated_data['new_password']
         
         try:
             user = User.objects.get(email=email)
-            # Get the latest unused OTP for this user
-            otp_record = PasswordResetOTP.objects.filter(
+            # Find the OTP record by reset_token
+            otp_record = PasswordResetOTP.objects.get(
                 user=user,
-                is_used=False
-            ).latest('created_at')
+                reset_token=reset_token,
+                is_used=True
+            )
             
             if otp_record.is_expired:
-                return Response({'detail': 'OTP has expired. Please request a new one.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            if otp_record.is_locked:
-                return Response({'detail': 'Too many failed attempts. Please request a new OTP.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-            
-            # Check if the submitted OTP code matches
-            if otp_record.otp_code != otp_code:
-                otp_record.failed_attempts += 1
-                otp_record.save(update_fields=['failed_attempts'])
-                remaining = PasswordResetOTP.MAX_FAILED_ATTEMPTS - otp_record.failed_attempts
-                if remaining > 0:
-                    return Response({'detail': f'Invalid OTP. {remaining} attempt(s) remaining.'}, status=status.HTTP_400_BAD_REQUEST)
-                else:
-                    return Response({'detail': 'Too many failed attempts. Please request a new OTP.'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+                return Response({'detail': 'Password reset session has expired. Please request a new OTP.'}, status=status.HTTP_400_BAD_REQUEST)
                 
             # Valid OTP, update password
             user.set_password(new_password)
             user.save()
             
-            # Mark OTP as used
-            otp_record.is_used = True
+            # Clear reset token
+            otp_record.reset_token = None
             otp_record.save()
             
             return Response({'detail': 'Password has been reset successfully. You can now login.'}, status=status.HTTP_200_OK)

@@ -60,24 +60,18 @@ class OrderViewSet(viewsets.ModelViewSet):
             return OrderListSerializer
         return OrderDetailSerializer
 
-    def _validate_coupon(self, coupon_code, user):
+    def _validate_coupon(self, coupon_code, user, order_amount=None):
         """
         Validates coupon code and returns the coupon object or error response.
-        Only validates fields that exist in the Coupon model: code, is_active, valid_until, discount_percent
+        Checks is_active, expiration, max_usage, and minimum_order_amount.
         """
         try:
             coupon = Coupon.objects.get(code__iexact=coupon_code)
         except Coupon.DoesNotExist:
             return None, {'error': 'Invalid coupon code'}
 
-        # Check if coupon is active
-        if not coupon.is_active:
-            return None, {'error': 'This coupon is no longer active'}
-
-        # Check validity date (only valid_until exists, not valid_from or valid_to)
-        now = timezone.now()
-        if coupon.valid_until and now > coupon.valid_until:
-            return None, {'error': 'This coupon has expired'}
+        if not coupon.is_valid(order_amount=order_amount):
+            return None, {'error': 'This coupon is invalid, expired, or you do not meet the requirements'}
 
         return coupon, None
 
@@ -111,13 +105,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not cart.items.exists():
             return Response({'error': 'Cart is empty'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Calculate subtotal from cart to validate coupon against minimum
+        subtotal = cart.total_price
+
         # Validate coupon
-        coupon, error = self._validate_coupon(coupon_code, request.user)
+        coupon, error = self._validate_coupon(coupon_code, request.user, order_amount=subtotal)
         if error:
             return Response(error, status=status.HTTP_400_BAD_REQUEST)
-
-        # Calculate subtotal from cart
-        subtotal = cart.total_price
 
         # Calculate discount using discount_percent
         total_discount = self._calculate_discount(subtotal, coupon)
@@ -161,9 +155,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not cart.items.exists():
             return Response({'error': 'Cart is empty'}, status=status.HTTP_400_BAD_REQUEST)
 
+        subtotal_for_validation = cart.total_price
+
         # Validate coupon if provided
         if coupon_code:
-            coupon, error = self._validate_coupon(coupon_code, request.user)
+            coupon, error = self._validate_coupon(coupon_code, request.user, order_amount=subtotal_for_validation)
             if error:
                 return Response(error, status=status.HTTP_400_BAD_REQUEST)
 
@@ -283,44 +279,61 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                     OrderItem.objects.create(**order_item_data)
                     
-                    # Reduce stock only for products (not combos)
-                    if item_data['item_type'] == 'product' and item_data['product']:
-                        item_data['product'].stock -= quantity
-                        item_data['product'].save(update_fields=['stock'])
+                # Gather IDs for batch stock update
+                product_updates = {}
+                combo_updates = {}
+                
+                for item_data in cart_items_data:
+                    quantity = item_data['quantity']
+                    if item_data['item_type'] == 'product' and item_data.get('product'):
+                        product_updates[item_data['product'].pk] = product_updates.get(item_data['product'].pk, 0) + quantity
+                    elif item_data['item_type'] == 'combo' and item_data.get('item'):
+                        combo_updates[item_data['item'].pk] = combo_updates.get(item_data['item'].pk, 0) + quantity
+
+                from products.models import Product, ProductCombo
+
+                # Batch reduce stock for products
+                if product_updates:
+                    products = list(Product.objects.select_for_update().filter(pk__in=product_updates.keys()))
+                    for product in products:
+                        reduce_by = product_updates[product.pk]
+                        if product.stock < reduce_by:
+                            raise ValueError(f'Insufficient stock for {product.name}. Available: {product.stock}')
+                        product.stock -= reduce_by
+                    Product.objects.bulk_update(products, ['stock'])
+
+                # Batch reduce stock for combos
+                if combo_updates:
+                    combos = list(ProductCombo.objects.select_for_update().filter(pk__in=combo_updates.keys()))
+                    for combo in combos:
+                        reduce_by = combo_updates[combo.pk]
+                        if not hasattr(combo, 'stock'):
+                            continue
+                        if combo.stock < reduce_by:
+                            raise ValueError(f'Insufficient stock for {combo.name}. Available: {combo.stock}')
+                        combo.stock -= reduce_by
+                    ProductCombo.objects.bulk_update(combos, ['stock'])
+                            
+                # Increase usage count on coupon
+                if coupon:
+                    coupon.usage_count = models.F('usage_count') + 1
+                    coupon.save(update_fields=['usage_count'])
+
+                # Clear cart items securely inside the transaction to prevent desynchronization
+                cart.items.all().delete()
 
                 # Transaction complete - prepare response data
                 order_data = OrderDetailSerializer(order).data
 
+        except ValueError as e:
+            logger.warning(f"Order creation validation failed: {str(e)}")
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.error(f"Order creation failed: {str(e)}")
             return Response(
                 {'error': f'Failed to create order: {str(e)}'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-        # CART DELETION OUTSIDE TRANSACTION - This prevents rollback issues
-        try:
-            cart_item_count = cart.items.count()
-            logger.info(f"Attempting to delete {cart_item_count} cart items for user {request.user.id}")
-            
-            # Delete cart items explicitly
-            deleted_count, _ = cart.items.all().delete()
-            logger.info(f"Successfully deleted {deleted_count} cart items")
-            
-            # Refresh cart to update total_price
-            cart.refresh_from_db()
-            
-            # Verify deletion
-            remaining_items = cart.items.count()
-            if remaining_items > 0:
-                logger.warning(f"Cart still has {remaining_items} items after deletion!")
-            else:
-                logger.info(f"Cart successfully cleared for user {request.user.id}")
-                
-        except Exception as e:
-            # Log error but don't fail the order creation
-            logger.error(f"Failed to clear cart for user {request.user.id}: {str(e)}")
-            # Order is already created, so we return success
         
         # Generate order number
         order_number = f"ORD-{order.id:06d}"
@@ -336,31 +349,55 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         """
-        Cancel order and restore stock
+        Cancel order and restore stock (both products AND combos)
         """
-        order = self.get_object()
-        
-        if order.status in ['delivered', 'cancelled', 'delivering']:
-            return Response(
-                {'error': f'Cannot cancel order with status: {order.status}'}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
         with transaction.atomic():
-            # Restore stock
-            for item in order.items.select_related('product').all():
+            # Lock the order to prevent concurrent cancellations
+            obj = self.get_object()
+            if obj.user != request.user and not request.user.is_staff:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("You do not have permission to cancel this order.")
+                
+            order = Order.objects.select_for_update().get(pk=obj.pk)
+            
+            if order.status in ['delivered', 'cancelled', 'delivering']:
+                return Response(
+                    {'success': False, 'error': f'Cannot cancel order with status: {order.status}'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            from products.models import Product, ProductCombo
+            
+            # Gather quantities for batch stock restoration
+            product_updates = {}
+            combo_updates = {}
+            
+            for item in order.items.select_related('product', 'combo').all():
                 if item.product:
-                    item.product.stock += item.quantity
-                    item.product.save(update_fields=['stock'])
+                    product_updates[item.product.pk] = product_updates.get(item.product.pk, 0) + item.quantity
+                elif item.combo and hasattr(item.combo, 'stock'):
+                    combo_updates[item.combo.pk] = combo_updates.get(item.combo.pk, 0) + item.quantity
+                    
+            # Batch restore stock for products
+            if product_updates:
+                products = list(Product.objects.select_for_update().filter(pk__in=product_updates.keys()))
+                for product in products:
+                    product.stock += product_updates[product.pk]
+                Product.objects.bulk_update(products, ['stock'])
+                
+            # Batch restore stock for combos
+            if combo_updates:
+                combos = list(ProductCombo.objects.select_for_update().filter(pk__in=combo_updates.keys()))
+                for combo in combos:
+                    combo.stock += combo_updates[combo.pk]
+                ProductCombo.objects.bulk_update(combos, ['stock'])
             
             order.status = 'cancelled'
-            if hasattr(order, 'cancelled_at'):
-                order.cancelled_at = timezone.now()
-                order.save(update_fields=['status', 'cancelled_at'])
-            else:
-                order.save(update_fields=['status'])
+            order.cancelled_at = timezone.now()
+            order.save(update_fields=['status', 'cancelled_at'])
         
         return Response({
+            'success': True,
             'message': 'Order cancelled successfully',
             'order': OrderDetailSerializer(order).data
         })

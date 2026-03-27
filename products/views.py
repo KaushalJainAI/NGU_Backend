@@ -14,7 +14,8 @@ from .serializers import (
     ProductListSerializer,
     ProductDetailSerializer,
     ProductComboSerializer,
-    ProductImageSerializer
+    ProductImageSerializer,
+    HomepageSectionSerializer,
 )
 from .cache import (
     make_cache_key,
@@ -201,7 +202,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def sections(self, request):
-        """Get all active product sections with their products and combos - CACHED"""
+        """Get all active product sections with their products and combos - CACHED & SERIALIZED"""
         # Check cache for non-staff users
         cache_key = make_cache_key(CACHE_PREFIX_SECTIONS, 'all')
         if not (request.user and request.user.is_staff):
@@ -211,50 +212,12 @@ class ProductViewSet(viewsets.ModelViewSet):
         
         sections = ProductSection.objects.filter(is_active=True).order_by('display_order')
         
-        results = []
-        for section in sections:
-            # Get products for this section
-            products = []
-            for product in section.get_products():
-                products.append({
-                    'id': product.id,
-                    'name': product.name,
-                    'slug': product.slug,
-                    'image': request.build_absolute_uri(product.image.url) if product.image else '',
-                    'price': float(product.final_price),
-                    'original_price': float(product.price),
-                    'discount': product.discount_percentage,
-                    'weight': product.weight,
-                    'badge': product.badge,
-                    'is_featured': product.is_featured,
-                })
-            
-            # Get combos for this section
-            combos = []
-            for combo in section.get_combos():
-                combos.append({
-                    'id': combo.id,
-                    'name': combo.display_title,
-                    'slug': combo.slug,
-                    'image': request.build_absolute_uri(combo.image.url) if combo.image else '',
-                    'price': float(combo.final_price),
-                    'original_price': float(combo.price),
-                    'discount': combo.discount_percentage,
-                    'badge': combo.badge or 'Combo',
-                    'is_featured': combo.is_featured,
-                })
-            
-            results.append({
-                'id': section.id,
-                'name': section.name,
-                'slug': section.slug,
-                'section_type': section.section_type,
-                'description': section.description,
-                'products': products,
-                'combos': combos,
-            })
-        
-        response_data = {'results': results}
+        serializer = HomepageSectionSerializer(
+            sections,
+            many=True,
+            context={'request': request},
+        )
+        response_data = {'results': serializer.data}
         
         # Cache for non-staff users
         if not (request.user and request.user.is_staff):
@@ -368,11 +331,22 @@ search_engine = SpiceSearchEngine()
 def unified_search(request):
     """SINGLE ENDPOINT: Search + All Recommendations (Products + Combos ranked)"""
     query = request.GET.get('q', '').strip()
-    top_k = int(request.GET.get('top_k', 20))
-    threshold = int(request.GET.get('threshold', 60))
-    
+
+    try:
+        top_k = int(request.GET.get('top_k', 20))
+    except (ValueError, TypeError):
+        return Response({'success': False, 'error': 'top_k must be a valid integer'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        threshold = int(request.GET.get('threshold', 60))
+    except (ValueError, TypeError):
+        return Response({'success': False, 'error': 'threshold must be a valid integer'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
     if not query:
-        return Response({'error': 'Query "q" required'}, status=400)
+        return Response({'success': False, 'error': 'Query "q" required'},
+                        status=status.HTTP_400_BAD_REQUEST)
     
     results = search_engine.unified_search(query, top_k, threshold)
     return Response(results)

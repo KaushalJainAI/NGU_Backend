@@ -4,6 +4,7 @@ from rest_framework import viewsets, permissions, status, mixins
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny, SAFE_METHODS
 from rest_framework.views import APIView
+from rest_framework.throttling import UserRateThrottle
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from decimal import Decimal
@@ -62,8 +63,9 @@ class PaymentAccountView(APIView):
     permission_classes = [IsAuthenticated]
     
     def get(self, request):
-        # Get the first receivable account
-        account = ReceivableAccount.objects.first()
+        # Get the default active account, fallback to any active account
+        account = ReceivableAccount.objects.filter(is_active=True, is_default=True).first() or \
+                  ReceivableAccount.objects.filter(is_active=True).first()
         
         if not account:
             return Response(
@@ -82,6 +84,7 @@ class CouponViewSet(viewsets.ModelViewSet):
     queryset = Coupon.objects.all()
     serializer_class = CouponSerializer
     permission_classes = [IsAdminUser]
+    throttle_classes = [UserRateThrottle]
 
 
 class DashboardViewSet(viewsets.ViewSet):
@@ -90,6 +93,7 @@ class DashboardViewSet(viewsets.ViewSet):
     Contains sales statistics and business data (cached for 2 minutes)
     """
     permission_classes = [IsAdminUser]
+    throttle_classes = [UserRateThrottle]
 
     def list(self, request):
         from django.core.cache import cache

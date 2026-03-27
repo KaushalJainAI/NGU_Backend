@@ -72,7 +72,9 @@ class ContactSubmissionViewSet(viewsets.ModelViewSet):
         """Mark as replied with admin notes"""
         submission = self.get_object()
         submission.status = 'replied'
-        submission.admin_notes = request.data.get('notes', '')
+        from django.utils.html import escape
+        notes = request.data.get('notes', '')
+        submission.admin_notes = escape(notes) if notes else ''
         submission.replied_at = timezone.now()
         submission.save(update_fields=['status', 'admin_notes', 'replied_at', 'updated_at'])
         return Response({'status': 'marked as replied'})
@@ -105,8 +107,10 @@ class ChatSessionViewSet(viewsets.ModelViewSet):
                 # For anonymous users:
                 # - Allow retrieving session by session_id query param
                 # - Allow accessing session by pk (for messages action on detail routes)
+                session_id = self.request.query_params.get('session_id')
                 if session_id:
-                    qs = qs.filter(session_id=session_id)
+                    # Prevent enumerating authenticated users' sessions
+                    qs = qs.filter(session_id=session_id, user__isnull=True)
                 else:
                     # Anonymous users can only access sessions via valid session_id (not PK)
                     qs = qs.none()
@@ -170,11 +174,12 @@ class ChatSessionViewSet(viewsets.ModelViewSet):
             else:
                 sender_name = session.guest_name or 'Guest'
             
+            from django.utils.html import escape
             message = ChatMessage.objects.create(
                 session=session,
                 sender_type=sender_type,
                 sender_name=sender_name,
-                message=serializer.validated_data['message']
+                message=escape(serializer.validated_data['message'])
             )
             
             # Update session timestamp

@@ -104,7 +104,25 @@ class Category(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(self.name)
+            base_slug = slugify(self.name)
+            if not base_slug:
+                base_slug = "category"
+            slug = base_slug
+            counter = 1
+            from django.core.exceptions import ValidationError
+            from django.db import transaction, IntegrityError
+            while True:
+                self.slug = slug
+                try:
+                    self.full_clean()
+                    with transaction.atomic():
+                        super().save(*args, **kwargs)
+                    return
+                except (ValidationError, IntegrityError):
+                    slug = f"{base_slug}-{counter}"
+                    counter += 1
+                    
+        self.full_clean()
         super().save(*args, **kwargs)
 
 
@@ -221,6 +239,9 @@ class Product(models.Model):
             models.Index(fields=['is_active', '-created_at']),
             models.Index(fields=['spice_form', 'is_active']),
         ]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(stock__gte=0), name='stock_non_negative'),
+        ]
 
     def __str__(self):
         return f"{self.name} - {self.weight}"
@@ -244,11 +265,18 @@ class Product(models.Model):
                 
             slug = base_slug
             counter = 1
-            # Check for name collisions and ensure uniqueness
-            while Product.objects.filter(slug=slug).exists():
-                slug = f"{base_slug}-{counter}"
-                counter += 1
-            self.slug = slug
+            from django.core.exceptions import ValidationError
+            from django.db import transaction, IntegrityError
+            while True:
+                self.slug = slug
+                try:
+                    self.full_clean()
+                    with transaction.atomic():
+                        super().save(*args, **kwargs)
+                    return
+                except (ValidationError, IntegrityError):
+                    slug = f"{base_slug}-{counter}"
+                    counter += 1
         
         # Run validation
         self.full_clean()
@@ -395,7 +423,23 @@ class ProductCombo(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(self.name)
+            base_slug = slugify(self.name)
+            if not base_slug:
+                base_slug = "combo"
+            slug = base_slug
+            counter = 1
+            from django.core.exceptions import ValidationError
+            from django.db import transaction, IntegrityError
+            while True:
+                self.slug = slug
+                try:
+                    self.full_clean()
+                    with transaction.atomic():
+                        super().save(*args, **kwargs)
+                    return
+                except (ValidationError, IntegrityError):
+                    slug = f"{base_slug}-{counter}"
+                    counter += 1
         
         # Run validation
         self.full_clean()

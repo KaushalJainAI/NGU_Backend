@@ -47,7 +47,8 @@ class PasswordResetOTP(models.Model):
     MAX_FAILED_ATTEMPTS = 5
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_otps')
-    otp_code = models.CharField(max_length=6)
+    otp_code = models.CharField(max_length=255)
+    reset_token = models.CharField(max_length=100, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     is_used = models.BooleanField(default=False)
@@ -57,7 +58,18 @@ class PasswordResetOTP(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.user.email} - {self.otp_code}"
+        return f"{self.user.email} - OTP Request"
+        
+    def set_otp(self, raw_otp):
+        from django.contrib.auth.hashers import make_password
+        self.otp_code = make_password(raw_otp)
+
+    def check_otp(self, raw_otp):
+        from django.contrib.auth.hashers import check_password
+        # Support fallback to plaintext if old record
+        if len(self.otp_code) == 6 or '$' not in self.otp_code:
+            return self.otp_code == raw_otp
+        return check_password(raw_otp, self.otp_code)
     
     @property
     def is_expired(self):

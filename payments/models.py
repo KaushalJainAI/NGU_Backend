@@ -95,13 +95,15 @@ class PaymentMethod(models.Model):
             return f"{self.user.email} - {self.wallet_provider}"
 
     def save(self, *args, **kwargs):
-        # Ensure only one default payment method per user
-        if self.is_default:
-            PaymentMethod.objects.filter(
-                user=self.user, 
-                is_default=True
-            ).exclude(pk=self.pk).update(is_default=False)
-        super().save(*args, **kwargs)
+        from django.db import transaction
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            # Ensure only one default payment method per user
+            if self.is_default:
+                PaymentMethod.objects.filter(
+                    user=self.user, 
+                    is_default=True
+                ).exclude(pk=self.pk).update(is_default=False)
 
     @property
     def masked_display(self):

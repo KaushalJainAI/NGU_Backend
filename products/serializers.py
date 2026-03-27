@@ -4,6 +4,221 @@ from django.db.models import Avg, Count
 from .models import Category, Product, ProductImage, ProductCombo, ProductComboItem, ProductSection
 
 
+# ---------------------------------------------------------------------------
+# Lightweight serializers for the /products/sections/ endpoint
+# ---------------------------------------------------------------------------
+
+class SectionProductSerializer(serializers.Serializer):
+    """Lightweight product representation for homepage sections.
+    Uses SerializerMethodField for safe attribute access."""
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    slug = serializers.CharField()
+    image = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+    original_price = serializers.SerializerMethodField()
+    discount = serializers.SerializerMethodField()
+    weight = serializers.SerializerMethodField()
+    badge = serializers.SerializerMethodField()
+    is_featured = serializers.BooleanField()
+
+    def get_image(self, obj):
+        if not getattr(obj, 'image', None):
+            return ''
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url
+
+    def get_price(self, obj):
+        if hasattr(obj, 'final_price'):
+            return float(obj.final_price)
+        return float(getattr(obj, 'price', 0))
+
+    def get_original_price(self, obj):
+        return float(getattr(obj, 'price', 0))
+
+    def get_discount(self, obj):
+        return getattr(obj, 'discount_percentage', 0)
+
+    def get_weight(self, obj):
+        return getattr(obj, 'weight', None)
+
+    def get_badge(self, obj):
+        return getattr(obj, 'badge', '') or ''
+
+
+class SectionComboSerializer(serializers.Serializer):
+    """Lightweight combo representation for homepage sections."""
+    id = serializers.IntegerField()
+    name = serializers.SerializerMethodField()
+    slug = serializers.CharField()
+    image = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+    original_price = serializers.SerializerMethodField()
+    discount = serializers.SerializerMethodField()
+    badge = serializers.SerializerMethodField()
+    is_featured = serializers.BooleanField()
+
+    def get_name(self, obj):
+        return getattr(obj, 'display_title', None) or getattr(obj, 'name', '')
+
+    def get_image(self, obj):
+        if not getattr(obj, 'image', None):
+            return ''
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(obj.image.url)
+        return obj.image.url
+
+    def get_price(self, obj):
+        if hasattr(obj, 'final_price'):
+            return float(obj.final_price)
+        return float(getattr(obj, 'price', 0))
+
+    def get_original_price(self, obj):
+        return float(getattr(obj, 'price', 0))
+
+    def get_discount(self, obj):
+        return getattr(obj, 'discount_percentage', 0)
+
+    def get_badge(self, obj):
+        return getattr(obj, 'badge', '') or 'Combo'
+
+
+class HomepageSectionSerializer(serializers.Serializer):
+    """Full section with nested products and combos for /products/sections/"""
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    slug = serializers.CharField()
+    section_type = serializers.CharField()
+    description = serializers.SerializerMethodField()
+    products = serializers.SerializerMethodField()
+    combos = serializers.SerializerMethodField()
+
+    def get_description(self, obj):
+        return getattr(obj, 'description', '')
+
+    def get_products(self, obj):
+        products_qs = obj.get_products()
+        return SectionProductSerializer(
+            products_qs,
+            many=True,
+            context=self.context,
+        ).data
+
+    def get_combos(self, obj):
+        combos_qs = obj.get_combos()
+        return SectionComboSerializer(
+            combos_qs,
+            many=True,
+            context=self.context,
+        ).data
+
+
+# ---------------------------------------------------------------------------
+# Serializers for the search / recommendation engine
+# ---------------------------------------------------------------------------
+
+class SearchProductSerializer(serializers.Serializer):
+    """Safe serializer for search result products."""
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    slug = serializers.CharField()
+    type = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
+    spice_form = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+    original_price = serializers.SerializerMethodField()
+    discount = serializers.SerializerMethodField()
+    weight = serializers.SerializerMethodField()
+    unit = serializers.SerializerMethodField()
+    image = serializers.SerializerMethodField()
+    in_stock = serializers.SerializerMethodField()
+    is_featured = serializers.BooleanField()
+
+    def get_type(self, obj):
+        return 'product'
+
+    def get_category(self, obj):
+        cat = getattr(obj, 'category', None)
+        return getattr(cat, 'name', '') if cat else ''
+
+    def get_spice_form(self, obj):
+        return getattr(obj, 'spice_form', '')
+
+    def get_price(self, obj):
+        if hasattr(obj, 'final_price'):
+            return float(obj.final_price)
+        return float(getattr(obj, 'price', 0))
+
+    def get_original_price(self, obj):
+        return float(getattr(obj, 'price', 0))
+
+    def get_discount(self, obj):
+        return getattr(obj, 'discount_percentage', 0)
+
+    def get_weight(self, obj):
+        return getattr(obj, 'weight', None)
+
+    def get_unit(self, obj):
+        return getattr(obj, 'unit', None)
+
+    def get_image(self, obj):
+        img = getattr(obj, 'image', None)
+        if img:
+            return img.url
+        return None
+
+    def get_in_stock(self, obj):
+        return getattr(obj, 'stock', 0)
+
+
+class SearchComboSerializer(serializers.Serializer):
+    """Safe serializer for search result combos."""
+    id = serializers.IntegerField()
+    name = serializers.SerializerMethodField()
+    slug = serializers.CharField()
+    type = serializers.SerializerMethodField()
+    price = serializers.SerializerMethodField()
+    original_price = serializers.SerializerMethodField()
+    discount = serializers.SerializerMethodField()
+    products_count = serializers.SerializerMethodField()
+    image = serializers.SerializerMethodField()
+    products = serializers.SerializerMethodField()
+
+    def get_type(self, obj):
+        return 'combo'
+
+    def get_name(self, obj):
+        return getattr(obj, 'display_title', None) or getattr(obj, 'name', '')
+
+    def get_price(self, obj):
+        if hasattr(obj, 'final_price'):
+            return float(obj.final_price)
+        return float(getattr(obj, 'price', 0))
+
+    def get_original_price(self, obj):
+        return float(getattr(obj, 'price', 0))
+
+    def get_discount(self, obj):
+        return getattr(obj, 'discount_percentage', 0)
+
+    def get_products_count(self, obj):
+        return obj.products.count() if hasattr(obj, 'products') else 0
+
+    def get_image(self, obj):
+        img = getattr(obj, 'image', None)
+        if img:
+            return img.url
+        return None
+
+    def get_products(self, obj):
+        if hasattr(obj, 'products'):
+            return [p.name for p in obj.products.all()[:3]]
+        return []
+
+
 class ProductSectionSerializer(serializers.ModelSerializer):
     """Serializer for ProductSection"""
     class Meta:

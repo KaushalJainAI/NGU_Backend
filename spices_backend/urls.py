@@ -13,7 +13,7 @@ def health_check(request):
     return JsonResponse({'status': 'healthy', 'service': 'ngu-backend'})
 
 from users.views import (
-    UserRegistrationView, UserProfileView, CustomTokenObtainPairView, ChangePasswordView,
+    UserRegistrationView, UserProfileView, CustomTokenObtainPairView, CustomTokenRefreshView, ChangePasswordView,
     PasswordResetRequestView, PasswordResetVerifyView, PasswordResetConfirmView
 )
 from products.views import (
@@ -59,7 +59,7 @@ urlpatterns = [
     # Authentication endpoints
     path('api/auth/register/', UserRegistrationView.as_view(), name='register'),
     path('api/auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('api/auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/auth/token/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),
     path('api/auth/profile/', UserProfileView.as_view(), name='profile'),
     path('api/auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('api/auth/password-reset-request/', PasswordResetRequestView.as_view(), name='password-reset-request'),

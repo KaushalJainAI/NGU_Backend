@@ -110,15 +110,27 @@ class ProductImage(models.Model):
 
 ### 4. Combo Pricing
 
-Combos store `original_price` and `price` (discounted):
+Combos store `price` (the combo price) and `discount_price` (optional discounted price).
+The `total_original_price` property computes the sum of individual product prices:
 ```python
 class ProductCombo(models.Model):
-    original_price = models.DecimalField()  # Sum of individual products
-    price = models.DecimalField()           # Discounted combo price
+    price = models.DecimalField()           # Combo bundle price
+    discount_price = models.DecimalField()  # Optional discounted price
     
     @property
+    def final_price(self):
+        return self.discount_price if self.discount_price else self.price
+
+    @property
+    def total_original_price(self):
+        # Sum of individual product prices * quantity
+        return self.productcomboitem_set.aggregate(...)
+
+    @property
     def discount_percentage(self):
-        return ((original_price - price) / original_price) * 100
+        if self.discount_price and self.discount_price < self.price:
+            return int(((self.price - self.discount_price) / self.price) * 100)
+        return 0
 ```
 
 ### 5. S3 Storage Configuration (Django 5.x)
