@@ -63,6 +63,12 @@ Desktop.ini
 .envrc
 # Keep .env.example - it's safe to commit
 
+# Sensitive credentials
+*.pem
+*.csv
+*.key
+
+
 # Coverage reports
 htmlcov/
 .coverage

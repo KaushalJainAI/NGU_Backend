@@ -212,14 +212,25 @@ class PasswordResetRequestView(APIView):
             otp_record.save()
             
             # Send Email asynchronously to prevent blocking and timing attacks
+            def send_otp_email(email_kwargs):
+                import logging
+                logger = logging.getLogger(__name__)
+                try:
+                    send_mail(**email_kwargs)
+                except Exception as e:
+                    logger.error(f"Failed to send OTP email to {email_kwargs['recipient_list']}: {str(e)}")
+                    # Also print to console for immediate visibility in dev
+                    print(f"\n❌ EMAIL ERROR: {str(e)}\n")
+
             import threading
-            threading.Thread(target=send_mail, kwargs={
+            email_kwargs = {
                 'subject': 'Password Reset OTP - NGU Spices',
                 'message': f'Your OTP for password reset is: {otp_code}\n\nThis code will expire in 10 minutes.',
                 'from_email': settings.DEFAULT_FROM_EMAIL if hasattr(settings, 'DEFAULT_FROM_EMAIL') else settings.EMAIL_HOST_USER,
                 'recipient_list': [user.email],
-                'fail_silently': True,
-            }).start()
+                'fail_silently': False,
+            }
+            threading.Thread(target=send_otp_email, args=(email_kwargs,)).start()
             
         except User.DoesNotExist:
             # Prevent email enumeration via timing attack
@@ -322,3 +333,91 @@ class PasswordResetConfirmView(APIView):
             
         except (User.DoesNotExist, PasswordResetOTP.DoesNotExist):
             return Response({'detail': 'Invalid OTP or email.'}, status=status.HTTP_400_BAD_REQUEST)
+
+# ==================== GOOGLE SOCIAL AUTH VIEWS ====================
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
+class GoogleLogin(APIView):
+    """
+    Google Social Login View (Manual id_token Verification)
+    Receives frontend's Google credential, verifies it locally, 
+    and returns JWT tokens for the session.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [LoginRateThrottle]
+
+    def post(self, request):
+        # Frontend sends the credential as `access_token` due to authAPI setup
+        token = request.data.get('access_token') or request.data.get('id_token')
+        
+        if not token:
+            return Response({'detail': 'Google token is missing'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            # 1. Verify token signature against Google's certificates
+            client_id = settings.SOCIALACCOUNT_PROVIDERS['google']['APP']['client_id']
+            idinfo = id_token.verify_oauth2_token(
+                token, 
+                google_requests.Request(), 
+                client_id
+            )
+            
+            # 2. Extract user info
+            email = idinfo.get('email')
+            name = idinfo.get('name', '')
+            first_name = idinfo.get('given_name', '')
+            last_name = idinfo.get('family_name', '')
+            
+            if not email:
+                return Response({'detail': 'Email not provided by Google'}, status=status.HTTP_400_BAD_REQUEST)
+                
+            # 3. Get or create user
+            user, created = User.objects.get_or_create(email=email, defaults={
+                'username': email.split('@')[0],
+                'name': name,
+                'first_name': first_name,
+                'last_name': last_name,
+            })
+            
+            if created:
+                user.set_unusable_password()
+                user.save()
+            elif not user.name and name:
+                # Update name if previously empty
+                user.name = name
+                user.save(update_fields=['name'])
+                
+            # 4. Generate identical JWT tokens as CustomTokenObtainPairView
+            refresh = CustomTokenObtainPairSerializer.get_token(user)
+            access = refresh.access_token
+            
+            response = Response({
+                'access': str(access),
+                'refresh': str(refresh),
+                'user': UserSerializer(user).data
+            }, status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED)
+            
+            # 5. Set HttpOnly secure cookies
+            response.set_cookie(
+                key='access_token',
+                value=str(access),
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite='Lax',
+                max_age=3600
+            )
+            response.set_cookie(
+                key='refresh_token',
+                value=str(refresh),
+                httponly=True,
+                secure=not settings.DEBUG,
+                samesite='Lax',
+                max_age=3600 * 24 * 7
+            )
+            
+            return response
+            
+        except ValueError as e:
+            return Response({'detail': 'Invalid Google token', 'error': str(e)}, status=status.HTTP_401_UNAUTHORIZED)
+

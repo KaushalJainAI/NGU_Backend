@@ -14,7 +14,7 @@ def health_check(request):
 
 from users.views import (
     UserRegistrationView, UserProfileView, CustomTokenObtainPairView, CustomTokenRefreshView, ChangePasswordView,
-    PasswordResetRequestView, PasswordResetVerifyView, PasswordResetConfirmView
+    PasswordResetRequestView, PasswordResetVerifyView, PasswordResetConfirmView, GoogleLogin
 )
 from products.views import (
     CategoryViewSet, ProductViewSet, ComboProductViewSet, ProductImageViewSet, get_spice_forms, unified_search
@@ -65,6 +65,11 @@ urlpatterns = [
     path('api/auth/password-reset-request/', PasswordResetRequestView.as_view(), name='password-reset-request'),
     path('api/auth/password-reset-verify/', PasswordResetVerifyView.as_view(), name='password-reset-verify'),
     path('api/auth/password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+    path('api/auth/google/', GoogleLogin.as_view(), name='google_login'),
+    
+    # Standard dj-rest-auth routes
+    path('api/auth/', include('dj_rest_auth.urls')),
+    path('api/auth/registration/', include('dj_rest_auth.registration.urls')),
 
     # Coupon validation endpoint
     path('api/auth/validate-coupon/', ValidateCouponAPIView.as_view(), name='validate-coupon'),

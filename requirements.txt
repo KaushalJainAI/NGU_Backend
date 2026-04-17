@@ -23,3 +23,6 @@ python-Levenshtein
 django-storages
 boto3
 olefile
+django-allauth
+dj-rest-auth
+google-auth
