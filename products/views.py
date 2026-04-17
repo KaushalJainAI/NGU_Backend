@@ -114,6 +114,7 @@ class CategoryViewSet(viewsets.ModelViewSet):
 class ProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+    pagination_class = None
     lookup_field = 'slug'
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['category', 'spice_form', 'organic', 'is_featured', 'is_active']
@@ -229,6 +230,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 class ComboProductViewSet(viewsets.ModelViewSet):
     serializer_class = ProductComboSerializer
     permission_classes = [IsAdminOrReadOnly]
+    pagination_class = None
     lookup_field = 'slug'
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['is_featured', 'is_active']
