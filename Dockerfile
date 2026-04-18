@@ -39,7 +39,10 @@ COPY --from=dependencies /usr/local/bin /usr/local/bin
 
 # Create a non-root user for security
 RUN addgroup --gid 1001 --system appgroup \
-    && adduser --uid 1001 --system --gid 1001 appuser
+    && adduser --uid 1001 --system --gid 1001 --home /app appuser
+
+# Set HOME environment variable
+ENV HOME=/app
 
 # Create directories and set permissions BEFORE copying code
 RUN mkdir -p /app/media /app/staticfiles

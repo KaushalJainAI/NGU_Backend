@@ -3,7 +3,11 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 from django.utils.text import slugify
 from django.db.models import Sum, Avg, Count
+from django.core.files.base import ContentFile
 from spices_backend.validators import validate_file_size, validate_image_extension
+from PIL import Image
+import io
+import os
 
 
 class ProductSection(models.Model):
@@ -210,6 +214,12 @@ class Product(models.Model):
         upload_to='products/',
         validators=[validate_file_size, validate_image_extension]
     )
+    thumbnail = models.ImageField(
+        upload_to='products/thumbnails/',
+        blank=True,
+        null=True,
+        editable=False
+    )
     
     # Flags
     is_active = models.BooleanField(default=True)
@@ -281,7 +291,41 @@ class Product(models.Model):
         # Run validation
         self.full_clean()
         
+        # Generate thumbnail if image exists
+        if self.image:
+            self.generate_thumbnail()
+            
         super().save(*args, **kwargs)
+
+    def generate_thumbnail(self):
+        """Generates a 300x300 thumbnail using Pillow"""
+        if not self.image:
+            return
+
+        try:
+            # Open the image using Pillow
+            img = Image.open(self.image)
+            img = img.convert('RGB')
+            
+            # Resize while maintaining aspect ratio
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+            
+            # Save the thumbnail to a BytesIO object
+            thumb_io = io.BytesIO()
+            img.save(thumb_io, format='JPEG', quality=85)
+            
+            # Create a ContentFile from the BytesIO object
+            filename = os.path.basename(self.image.name)
+            thumb_filename = f"thumb_{filename}"
+            
+            # Save the thumbnail to the field
+            self.thumbnail.save(
+                thumb_filename, 
+                ContentFile(thumb_io.getvalue()), 
+                save=False
+            )
+        except Exception as e:
+            print(f"Error generating thumbnail for product {self.name}: {e}")
 
     @property
     def final_price(self):
@@ -373,6 +417,12 @@ class ProductCombo(models.Model):
         null=True,
         validators=[validate_file_size, validate_image_extension]
     )
+    thumbnail = models.ImageField(
+        upload_to='combos/thumbnails/',
+        blank=True,
+        null=True,
+        editable=False
+    )
     is_active = models.BooleanField(default=True)
     is_featured = models.BooleanField(default=False)
     badge = models.CharField(max_length=20, blank=True)
@@ -444,7 +494,35 @@ class ProductCombo(models.Model):
         # Run validation
         self.full_clean()
         
+        # Generate thumbnail if image exists
+        if self.image:
+            self.generate_thumbnail()
+            
         super().save(*args, **kwargs)
+
+    def generate_thumbnail(self):
+        """Generates a 300x300 thumbnail using Pillow"""
+        if not self.image:
+            return
+
+        try:
+            img = Image.open(self.image)
+            img = img.convert('RGB')
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+            
+            thumb_io = io.BytesIO()
+            img.save(thumb_io, format='JPEG', quality=85)
+            
+            filename = os.path.basename(self.image.name)
+            thumb_filename = f"thumb_{filename}"
+            
+            self.thumbnail.save(
+                thumb_filename, 
+                ContentFile(thumb_io.getvalue()), 
+                save=False
+            )
+        except Exception as e:
+            print(f"Error generating thumbnail for combo {self.name}: {e}")
 
     @property
     def final_price(self):
