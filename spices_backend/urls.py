@@ -77,15 +77,15 @@ urlpatterns = [
     # Payment account for checkout (authenticated users)
     path('api/payment-account/', PaymentAccountView.as_view(), name='payment-account'),
 
-    # API Documentation
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
-
-     path('api/spice-forms/', get_spice_forms, name='spice-forms'),
-     path('api/search/', unified_search, name='unified-search' )
+    path('api/spice-forms/', get_spice_forms, name='spice-forms'),
+    path('api/search/', unified_search, name='unified-search' )
 ]
 
-
 if settings.DEBUG:
+    # API Documentation
+    urlpatterns += [
+        path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+        path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    ]
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

@@ -72,9 +72,9 @@ class ContactSubmissionViewSet(viewsets.ModelViewSet):
         """Mark as replied with admin notes"""
         submission = self.get_object()
         submission.status = 'replied'
-        from django.utils.html import escape
+        from django.utils.html import escape, strip_tags
         notes = request.data.get('notes', '')
-        submission.admin_notes = escape(notes) if notes else ''
+        submission.admin_notes = escape(strip_tags(notes)) if notes else ''
         submission.replied_at = timezone.now()
         submission.save(update_fields=['status', 'admin_notes', 'replied_at', 'updated_at'])
         return Response({'status': 'marked as replied'})
@@ -174,12 +174,12 @@ class ChatSessionViewSet(viewsets.ModelViewSet):
             else:
                 sender_name = session.guest_name or 'Guest'
             
-            from django.utils.html import escape
+            from django.utils.html import escape, strip_tags
             message = ChatMessage.objects.create(
                 session=session,
                 sender_type=sender_type,
                 sender_name=sender_name,
-                message=escape(serializer.validated_data['message'])
+                message=escape(strip_tags(serializer.validated_data['message']))
             )
             
             # Update session timestamp

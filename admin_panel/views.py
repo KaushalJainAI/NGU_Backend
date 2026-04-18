@@ -61,6 +61,7 @@ class PaymentAccountView(APIView):
     This is a safe endpoint that only returns the necessary info for checkout.
     """
     permission_classes = [IsAuthenticated]
+    throttle_classes = [UserRateThrottle]
     
     def get(self, request):
         # Get the default active account, fallback to any active account
