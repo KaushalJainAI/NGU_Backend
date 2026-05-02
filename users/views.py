@@ -4,6 +4,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.conf import settings
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import ensure_csrf_cookie
 from .serializers import (
     UserRegistrationSerializer,
     UserSerializer,
@@ -44,6 +46,7 @@ class UserRegistrationView(generics.CreateAPIView):
         }, status=status.HTTP_201_CREATED)
 
 
+@method_decorator(ensure_csrf_cookie, name='dispatch')
 class UserProfileView(generics.RetrieveUpdateAPIView):
     """
     Get and update user profile
@@ -357,6 +360,12 @@ class GoogleLogin(APIView):
         try:
             # 1. Verify token signature against Google's certificates
             client_id = settings.SOCIALACCOUNT_PROVIDERS['google']['APP']['client_id']
+            
+            # Use dynamic host for any callback URI requirements if needed
+            # current_host = request.get_host()
+            # protocol = 'https' if request.is_secure() else 'http'
+            # callback_uri = f"{protocol}://{current_host}/api/auth/google/" 
+
             idinfo = id_token.verify_oauth2_token(
                 token, 
                 google_requests.Request(), 

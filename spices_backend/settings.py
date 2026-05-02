@@ -298,6 +298,10 @@ CSRF_TRUSTED_ORIGINS = config(
     default='http://localhost:3001,http://localhost:8000,http://127.0.0.1:8000'
 ).split(',')
 
+# CSRF Cookie Settings
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = 'Lax'
+
 # =============================================================================
 # PRODUCTION SECURITY SETTINGS
 # =============================================================================
@@ -313,9 +317,9 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     
-    # Secure cookies
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
+    # Secure cookies — override via env when running on HTTP (no SSL)
+    SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=True, cast=bool)
+    CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=True, cast=bool)
     
     # SSL redirect (set to False if load balancer handles SSL)
     SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
