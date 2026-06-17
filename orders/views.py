@@ -30,7 +30,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
 from decimal import Decimal
 import logging
@@ -279,18 +279,16 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                     OrderItem.objects.create(**order_item_data)
                     
-                # Gather IDs for batch stock update
+                # Gather IDs for batch stock update (products only — combos have
+                # no stock field to decrement).
                 product_updates = {}
-                combo_updates = {}
-                
+
                 for item_data in cart_items_data:
                     quantity = item_data['quantity']
                     if item_data['item_type'] == 'product' and item_data.get('product'):
                         product_updates[item_data['product'].pk] = product_updates.get(item_data['product'].pk, 0) + quantity
-                    elif item_data['item_type'] == 'combo' and item_data.get('item'):
-                        combo_updates[item_data['item'].pk] = combo_updates.get(item_data['item'].pk, 0) + quantity
 
-                from products.models import Product, ProductCombo
+                from products.models import Product
 
                 # Batch reduce stock for products
                 if product_updates:
@@ -302,18 +300,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                         product.stock -= reduce_by
                     Product.objects.bulk_update(products, ['stock'])
 
-                # Batch reduce stock for combos
-                if combo_updates:
-                    combos = list(ProductCombo.objects.select_for_update().filter(pk__in=combo_updates.keys()))
-                    for combo in combos:
-                        reduce_by = combo_updates[combo.pk]
-                        if not hasattr(combo, 'stock'):
-                            continue
-                        if combo.stock < reduce_by:
-                            raise ValueError(f'Insufficient stock for {combo.name}. Available: {combo.stock}')
-                        combo.stock -= reduce_by
-                    ProductCombo.objects.bulk_update(combos, ['stock'])
-                            
+                # Combos have no stock field (availability is governed only by
+                # is_active), so there is nothing to decrement. The previous code
+                # called ProductCombo.objects.bulk_update(combos, ['stock']) here,
+                # which raised FieldDoesNotExist and 500'd every order containing
+                # a combo.
+
                 # Increase usage count on coupon
                 if coupon:
                     coupon.usage_count = models.F('usage_count') + 1
