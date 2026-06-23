@@ -49,9 +49,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         user = self.request.user
         # Admin/superusers can see all orders
         if user.is_staff or user.is_superuser:
-            return Order.objects.all().prefetch_related('items__product', 'items__combo').select_related('user')
+            return Order.objects.all().prefetch_related('items__product', 'items__combo', 'items__variant').select_related('user')
         # Regular users only see their own orders
-        return Order.objects.filter(user=user).prefetch_related('items__product', 'items__combo')
+        return Order.objects.filter(user=user).prefetch_related('items__product', 'items__combo', 'items__variant')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -167,15 +167,21 @@ class OrderViewSet(viewsets.ModelViewSet):
         cart_items_data = []
         subtotal = Decimal('0')
         
-        for cart_item in cart.items.select_related('product', 'combo').all():
+        for cart_item in cart.items.select_related('product', 'combo', 'variant').all():
             # Handle both products and combos
             if cart_item.item_type == 'product' and cart_item.product:
                 item = cart_item.product
                 item_name = cart_item.product.name
-                item_weight = cart_item.product.formatted_weight
-                
-                item_stock = cart_item.product.stock
-                item_price = cart_item.product.final_price if hasattr(cart_item.product, 'final_price') else cart_item.product.price
+                variant = cart_item.variant
+
+                if variant:
+                    item_weight = variant.formatted_weight
+                    item_stock = variant.stock
+                    item_price = variant.final_price
+                else:
+                    item_weight = cart_item.product.formatted_weight
+                    item_stock = cart_item.product.stock
+                    item_price = cart_item.product.final_price if hasattr(cart_item.product, 'final_price') else cart_item.product.price
                 product_ref = cart_item.product
             elif cart_item.item_type == 'combo' and cart_item.combo:
                 item = cart_item.combo
@@ -192,6 +198,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 item_stock = getattr(cart_item.combo, 'stock', 999)  # Combos may not have stock limit
                 item_price = cart_item.combo.final_price if hasattr(cart_item.combo, 'final_price') else cart_item.combo.price
                 product_ref = None  # Combos don't have a product reference
+                variant = None
             else:
                 # Skip invalid items
                 logger.warning(f"Skipping invalid cart item: {cart_item.id}")
@@ -206,6 +213,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             cart_items_data.append({
                 'item': item,
                 'product': product_ref,  # Will be None for combos
+                'variant': variant,  # Will be None for combos / legacy lines
                 'item_type': cart_item.item_type,
                 'product_name': item_name,
                 'product_weight': item_weight,
@@ -274,37 +282,62 @@ class OrderViewSet(viewsets.ModelViewSet):
                     # Set product or combo reference based on item type
                     if item_data['item_type'] == 'product':
                         order_item_data['product'] = item_data['product']
+                        order_item_data['variant'] = item_data['variant']
                     elif item_data['item_type'] == 'combo':
                         order_item_data['combo'] = item_data['item']
 
                     OrderItem.objects.create(**order_item_data)
                     
-                # Gather IDs for batch stock update (products only — combos have
-                # no stock field to decrement).
+                # Gather quantities for batch stock update. Stock lives on the
+                # variant; the legacy Product.stock is kept in sync for the
+                # default variant so product listings stay accurate. Variant-less
+                # legacy lines decrement Product.stock directly. Combos have no
+                # stock to decrement.
+                variant_updates = {}
                 product_updates = {}
 
                 for item_data in cart_items_data:
+                    if item_data['item_type'] != 'product':
+                        continue
                     quantity = item_data['quantity']
-                    if item_data['item_type'] == 'product' and item_data.get('product'):
-                        product_updates[item_data['product'].pk] = product_updates.get(item_data['product'].pk, 0) + quantity
+                    variant = item_data.get('variant')
+                    if variant:
+                        variant_updates[variant.pk] = variant_updates.get(variant.pk, 0) + quantity
+                    elif item_data.get('product'):
+                        pk = item_data['product'].pk
+                        product_updates[pk] = product_updates.get(pk, 0) + quantity
 
-                from products.models import Product
+                from products.models import Product, ProductVariant
 
-                # Batch reduce stock for products
+                # Batch reduce stock for variants (+ mirror default to product)
+                if variant_updates:
+                    variants = list(ProductVariant.objects.select_for_update().filter(pk__in=variant_updates.keys()))
+                    mirror = {}  # product_pk -> qty to also subtract from Product.stock
+                    for variant in variants:
+                        reduce_by = variant_updates[variant.pk]
+                        if variant.stock < reduce_by:
+                            raise ValueError(f'Insufficient stock for {variant.product.name}. Available: {variant.stock}')
+                        variant.stock -= reduce_by
+                        if variant.is_default:
+                            mirror[variant.product_id] = mirror.get(variant.product_id, 0) + reduce_by
+                    ProductVariant.objects.bulk_update(variants, ['stock'])
+                    for pk, qty in mirror.items():
+                        product_updates[pk] = product_updates.get(pk, 0) + qty
+
+                # Batch reduce stock for products (legacy lines + default mirror)
                 if product_updates:
                     products = list(Product.objects.select_for_update().filter(pk__in=product_updates.keys()))
                     for product in products:
                         reduce_by = product_updates[product.pk]
-                        if product.stock < reduce_by:
-                            raise ValueError(f'Insufficient stock for {product.name}. Available: {product.stock}')
-                        product.stock -= reduce_by
+                        # Mirror updates can legitimately exceed legacy stock if it
+                        # drifted; clamp at 0 rather than failing the order.
+                        product.stock = max(0, product.stock - reduce_by)
                     Product.objects.bulk_update(products, ['stock'])
 
                 # Combos have no stock field (availability is governed only by
-                # is_active), so there is nothing to decrement. The previous code
-                # called ProductCombo.objects.bulk_update(combos, ['stock']) here,
-                # which raised FieldDoesNotExist and 500'd every order containing
-                # a combo.
+                # is_active), so there is nothing to decrement for them. The
+                # previous code called bulk_update(combos, ['stock']) here, which
+                # raised FieldDoesNotExist and 500'd every order containing a combo.
 
                 # Increase usage count on coupon
                 if coupon:
@@ -329,7 +362,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         # Generate order number
         order_number = f"ORD-{order.id:06d}"
-        
+
+        # Record purchase signal for recommendations (best-effort, never blocks)
+        from analytics.services import record_purchase_events
+        record_purchase_events(order)
+
         return Response({
             'message': 'Order created successfully',
             'order_id': order.id,
@@ -358,19 +395,32 @@ class OrderViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            from products.models import Product, ProductCombo
-            
+            from products.models import Product, ProductCombo, ProductVariant
+
             # Gather quantities for batch stock restoration
+            variant_updates = {}
             product_updates = {}
             combo_updates = {}
-            
-            for item in order.items.select_related('product', 'combo').all():
-                if item.product:
+
+            for item in order.items.select_related('product', 'combo', 'variant').all():
+                if item.item_type == 'product' and item.variant:
+                    variant_updates[item.variant.pk] = variant_updates.get(item.variant.pk, 0) + item.quantity
+                elif item.product:
                     product_updates[item.product.pk] = product_updates.get(item.product.pk, 0) + item.quantity
                 elif item.combo and hasattr(item.combo, 'stock'):
                     combo_updates[item.combo.pk] = combo_updates.get(item.combo.pk, 0) + item.quantity
-                    
-            # Batch restore stock for products
+
+            # Batch restore stock for variants (+ mirror default to product)
+            if variant_updates:
+                variants = list(ProductVariant.objects.select_for_update().filter(pk__in=variant_updates.keys()))
+                for variant in variants:
+                    restore_by = variant_updates[variant.pk]
+                    variant.stock += restore_by
+                    if variant.is_default:
+                        product_updates[variant.product_id] = product_updates.get(variant.product_id, 0) + restore_by
+                ProductVariant.objects.bulk_update(variants, ['stock'])
+
+            # Batch restore stock for products (legacy lines + default mirror)
             if product_updates:
                 products = list(Product.objects.select_for_update().filter(pk__in=product_updates.keys()))
                 for product in products:
@@ -393,6 +443,37 @@ class OrderViewSet(viewsets.ModelViewSet):
             'message': 'Order cancelled successfully',
             'order': OrderDetailSerializer(order).data
         })
+
+    @action(detail=True, methods=['get'])
+    def invoice(self, request, pk=None):
+        """
+        Generate and return a PDF tax invoice / bill for the order.
+        Filled dynamically from the order, its user, and its line items.
+        get_object() enforces ownership (or staff access) via get_queryset().
+        """
+        from django.http import HttpResponse
+
+        order = self.get_object()
+        try:
+            from .invoice import generate_invoice_pdf
+            pdf_bytes = generate_invoice_pdf(order)
+        except ImportError:
+            logger.error("reportlab is not installed; cannot generate invoice PDF")
+            return Response(
+                {'error': 'Invoice generation is not available on the server.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except Exception as e:
+            logger.error(f"Invoice generation failed for order {order.id}: {e}")
+            return Response(
+                {'error': 'Failed to generate invoice'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        filename = f"invoice-ORD-{order.id:06d}.pdf"
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
     def list(self, request):
         """

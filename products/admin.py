@@ -1,15 +1,29 @@
 from django.contrib import admin
-from .models import Category, Product, ProductImage, ProductCombo, ProductComboItem, ProductSection, ProductSearchKB, ProductComboSearchKB
+from adminsortable2.admin import SortableAdminBase, SortableInlineAdminMixin
+from modeltranslation.admin import TranslationAdmin
+from .models import (
+    Category, Product, ProductImage, ProductCombo, ProductComboItem,
+    ProductSection, ProductSectionPlacement, ProductSearchKB, ProductComboSearchKB,
+    ProductVariant,
+)
+
+
+class ProductSectionPlacementInline(SortableInlineAdminMixin, admin.TabularInline):
+    """Drag-and-drop ordering of products within a homepage section."""
+    model = ProductSectionPlacement
+    extra = 1
+    autocomplete_fields = ['product']
 
 
 @admin.register(ProductSection)
-class ProductSectionAdmin(admin.ModelAdmin):
+class ProductSectionAdmin(SortableAdminBase, admin.ModelAdmin):
     list_display = ['name', 'section_type', 'display_order', 'max_products', 'is_active', 'created_at']
     list_filter = ['section_type', 'is_active', 'created_at']
     search_fields = ['name', 'description']
     prepopulated_fields = {'slug': ('name',)}
     list_editable = ['display_order', 'is_active']
     ordering = ['display_order', 'name']
+    inlines = [ProductSectionPlacementInline]
     
     fieldsets = (
         ('Basic Information', {
@@ -25,7 +39,7 @@ class ProductSectionAdmin(admin.ModelAdmin):
 
 
 @admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
+class CategoryAdmin(TranslationAdmin):
     list_display = ['name', 'slug', 'is_active', 'created_at']
     list_filter = ['is_active', 'created_at']
     search_fields = ['name', 'description']
@@ -39,8 +53,17 @@ class ProductImageInline(admin.TabularInline):
     fields = ['image', 'alt_text']
 
 
+class ProductVariantInline(admin.TabularInline):
+    """Manage the packaging sizes (100g / 500g / 1kg ...) of a product inline."""
+    model = ProductVariant
+    extra = 1
+    fields = ['weight', 'unit', 'price', 'discount_price', 'stock',
+              'is_default', 'is_active', 'display_order', 'sku', 'slug']
+    readonly_fields = ['slug']
+
+
 @admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):
+class ProductAdmin(TranslationAdmin):
     list_display = ['name', 'category', 'spice_form', 'price', 'discount_price', 
                     'stock', 'organic', 'is_featured', 'is_active', 'created_at']
     list_filter = ['category', 'spice_form', 'organic', 'is_featured', 'is_active', 
@@ -49,9 +72,10 @@ class ProductAdmin(admin.ModelAdmin):
     prepopulated_fields = {'slug': ('name',)}
     list_editable = ['is_featured', 'is_active']
     ordering = ['-created_at']
-    inlines = [ProductImageInline]
-    filter_horizontal = ['sections']
-    
+    inlines = [ProductVariantInline, ProductImageInline]
+    # Section membership + ordering is managed from ProductSectionAdmin's
+    # drag-drop inline (a through-M2M can't be edited via filter_horizontal).
+
     fieldsets = (
         ('Basic Information', {
             'fields': ('name', 'slug', 'category', 'description')
@@ -66,9 +90,21 @@ class ProductAdmin(admin.ModelAdmin):
             'fields': ('image',)
         }),
         ('Flags & Placement', {
-            'fields': ('is_active', 'is_featured', 'badge', 'sections')
+            'fields': ('is_active', 'is_featured', 'badge')
         }),
     )
+
+
+@admin.register(ProductVariant)
+class ProductVariantAdmin(admin.ModelAdmin):
+    list_display = ['product', 'formatted_weight', 'price', 'discount_price',
+                    'stock', 'is_default', 'is_active', 'display_order']
+    list_filter = ['is_default', 'is_active', 'unit']
+    search_fields = ['product__name', 'slug', 'sku']
+    list_editable = ['price', 'discount_price', 'stock', 'is_active']
+    autocomplete_fields = ['product']
+    readonly_fields = ['slug']
+    ordering = ['product', 'display_order']
 
 
 class ProductComboItemInline(admin.TabularInline):

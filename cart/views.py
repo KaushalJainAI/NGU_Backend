@@ -40,9 +40,29 @@ from .serializers import (
 )
 from admin_panel.utils import generate_upi_qr_code
 from admin_panel.models import Coupon, ReceivableAccount
-from products.models import Product, ProductCombo
+from products.models import Product, ProductCombo, ProductVariant
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_variant(product, variant_id, *, lock=False):
+    """Return the ProductVariant for a product line.
+
+    If variant_id is given it must be an active variant of `product`; otherwise
+    fall back to the product's default (or first active) variant so older
+    clients that only send product_id keep working. Returns None if the product
+    has no variants at all (legacy data) — callers then fall back to the
+    product's own stock/price.
+    """
+    qs = ProductVariant.objects.filter(product=product, is_active=True)
+    if lock:
+        qs = qs.select_for_update()
+    if variant_id:
+        try:
+            return qs.get(id=int(variant_id))
+        except (ProductVariant.DoesNotExist, ValueError, TypeError):
+            return None
+    return qs.order_by('-is_default', 'display_order', 'weight').first()
 
 
 class CartViewSet(viewsets.ViewSet):
@@ -73,6 +93,7 @@ class CartViewSet(viewsets.ViewSet):
     def add_item(self, request):
         product_id = request.data.get('product_id') or request.data.get('id')
         item_type = request.data.get('item_type', 'product')
+        variant_id = request.data.get('variant_id')
 
         # Validate item_type
         if item_type not in ('product', 'combo'):
@@ -136,12 +157,22 @@ class CartViewSet(viewsets.ViewSet):
                         CartItem.objects.create(cart=cart, combo=item, item_type='combo', quantity=quantity)
                 else:
                     item = Product.objects.select_for_update().get(id=product_id, is_active=True)
-                    stock = item.stock
+                    variant = _resolve_variant(item, variant_id, lock=True)
+                    if variant_id and variant is None:
+                        return Response({'success': False, 'error': 'Selected size is unavailable'},
+                                        status=status.HTTP_400_BAD_REQUEST)
+                    stock = variant.stock if variant else item.stock
 
-                    # Check for existing cart item with lock
-                    cart_item = CartItem.objects.select_for_update().filter(
-                        cart=cart, product=item, item_type='product'
-                    ).first()
+                    # A cart line is identified by its variant (or the product
+                    # itself for legacy variant-less data).
+                    if variant:
+                        cart_item = CartItem.objects.select_for_update().filter(
+                            cart=cart, variant=variant, item_type='product'
+                        ).first()
+                    else:
+                        cart_item = CartItem.objects.select_for_update().filter(
+                            cart=cart, product=item, variant__isnull=True, item_type='product'
+                        ).first()
 
                     if cart_item:
                         new_quantity = cart_item.quantity + quantity
@@ -154,7 +185,8 @@ class CartViewSet(viewsets.ViewSet):
                         if quantity > stock:
                             return Response({'success': False, 'error': f'Only {stock} units available'},
                                             status=status.HTTP_400_BAD_REQUEST)
-                        CartItem.objects.create(cart=cart, product=item, item_type='product', quantity=quantity)
+                        CartItem.objects.create(cart=cart, product=item, variant=variant,
+                                                item_type='product', quantity=quantity)
 
         except (Product.DoesNotExist, ProductCombo.DoesNotExist):
             return Response({'success': False, 'error': 'Item not found'},
@@ -173,6 +205,7 @@ class CartViewSet(viewsets.ViewSet):
     def update_item(self, request):
         product_id = request.data.get('product_id') or request.data.get('id')
         item_type = request.data.get('item_type', 'product')
+        variant_id = request.data.get('variant_id')
 
         # Validate item_type
         if item_type not in ('product', 'combo'):
@@ -219,8 +252,15 @@ class CartViewSet(viewsets.ViewSet):
                     stock = getattr(item, 'stock', 999)
                 else:
                     item = Product.objects.select_for_update().get(id=product_id, is_active=True)
-                    cart_item = CartItem.objects.select_for_update().get(cart=cart, product=item, item_type='product')
-                    stock = item.stock
+                    variant = _resolve_variant(item, variant_id, lock=True)
+                    if variant:
+                        cart_item = CartItem.objects.select_for_update().get(
+                            cart=cart, variant=variant, item_type='product')
+                        stock = variant.stock
+                    else:
+                        cart_item = CartItem.objects.select_for_update().get(
+                            cart=cart, product=item, variant__isnull=True, item_type='product')
+                        stock = item.stock
 
                 if quantity <= 0:
                     cart_item.delete()
@@ -284,7 +324,16 @@ class CartViewSet(viewsets.ViewSet):
                 if item_type == 'combo':
                     cart_item = CartItem.objects.select_for_update().get(cart=cart, combo__id=product_id, item_type='combo')
                 else:
-                    cart_item = CartItem.objects.select_for_update().get(cart=cart, product__id=product_id, item_type='product')
+                    variant_id = request.data.get('variant_id')
+                    qs = CartItem.objects.select_for_update().filter(
+                        cart=cart, product__id=product_id, item_type='product')
+                    if variant_id:
+                        qs = qs.filter(variant__id=variant_id)
+                    # If multiple sizes of the same product are in the cart and no
+                    # variant was specified, remove the first matching line.
+                    cart_item = qs.first()
+                    if cart_item is None:
+                        raise CartItem.DoesNotExist()
 
                 cart_item.delete()
 
@@ -336,7 +385,7 @@ class CartViewSet(viewsets.ViewSet):
         # -----------------------------------------------------------
         # Phase 1: Validate all items and collect valid ones
         # -----------------------------------------------------------
-        validated_items = []  # list of (item_obj, item_type, quantity)
+        validated_items = []  # list of (item_obj, item_type, quantity, variant)
         skipped = []
 
         for item_data in items_data:
@@ -386,7 +435,7 @@ class CartViewSet(viewsets.ViewSet):
                         })
                         continue
 
-                    validated_items.append((item, 'combo', quantity))
+                    validated_items.append((item, 'combo', quantity, None))
 
                 else:
                     try:
@@ -399,15 +448,25 @@ class CartViewSet(viewsets.ViewSet):
                         })
                         continue
 
-                    if item.stock < quantity:
+                    variant = _resolve_variant(item, item_data.get('variant_id'))
+                    if item_data.get('variant_id') and variant is None:
                         skipped.append({
                             'id': str(product_id),
                             'type': 'product',
-                            'reason': f'only {item.stock} available'
+                            'reason': 'selected size unavailable'
                         })
                         continue
 
-                    validated_items.append((item, 'product', quantity))
+                    avail = variant.stock if variant else item.stock
+                    if avail < quantity:
+                        skipped.append({
+                            'id': str(product_id),
+                            'type': 'product',
+                            'reason': f'only {avail} available'
+                        })
+                        continue
+
+                    validated_items.append((item, 'product', quantity, variant))
 
             except ValueError as e:
                 skipped.append({
@@ -433,7 +492,7 @@ class CartViewSet(viewsets.ViewSet):
                 cart, _ = Cart.objects.get_or_create(user=request.user)
                 cart.items.all().delete()
 
-                for item_obj, item_type, quantity in validated_items:
+                for item_obj, item_type, quantity, variant in validated_items:
                     if item_type == 'combo':
                         CartItem.objects.create(
                             cart=cart, combo=item_obj,
@@ -441,7 +500,7 @@ class CartViewSet(viewsets.ViewSet):
                         )
                     else:
                         CartItem.objects.create(
-                            cart=cart, product=item_obj,
+                            cart=cart, product=item_obj, variant=variant,
                             item_type='product', quantity=quantity,
                         )
 

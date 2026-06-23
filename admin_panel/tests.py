@@ -19,11 +19,11 @@ class TestDashboard:
     base_url = '/api/dashboard/'
     
     def test_dashboard_authenticated(self, authenticated_client):
-        """Test authenticated user can access dashboard."""
+        """Test a regular (non-admin) user is forbidden from the dashboard.
+
+        DashboardViewSet is IsAdminUser-only (sales/business stats)."""
         response = authenticated_client.get(self.base_url)
-        assert response.status_code == status.HTTP_200_OK
-        assert 'totalProducts' in response.data
-        assert 'totalOrders' in response.data
+        assert response.status_code == status.HTTP_403_FORBIDDEN
     
     def test_dashboard_admin(self, admin_client):
         """Test admin can access dashboard."""
@@ -178,38 +178,35 @@ class TestPolicyManagement:
         """Test anyone can retrieve a policy."""
         # Create a policy first
         policy = Policy.objects.create(
-            type='privacy',
-            title='Privacy Policy',
+            type='shipping',
             content='Test privacy policy content'
         )
         
         # Use ID for lookup
-        response = api_client.get(f'{self.base_url}{policy.id}/')
+        response = api_client.get(f'{self.base_url}{policy.type}/')
         assert response.status_code == status.HTTP_200_OK
     
     def test_update_policy_admin_only(self, admin_client, db):
         """Test only admin can update policy."""
         policy = Policy.objects.create(
-            type='terms',
-            title='Terms',
+            type='shipping',
             content='Original terms'
         )
         
         data = {'content': 'Updated terms content'}
-        response = admin_client.patch(f'{self.base_url}{policy.id}/', data, format='json')
+        response = admin_client.patch(f'{self.base_url}{policy.type}/', data, format='json')
         assert response.status_code == status.HTTP_200_OK
     
     def test_update_policy_regular_user_forbidden(self, authenticated_client, db):
         """Test regular user cannot update policy."""
         policy = Policy.objects.create(
-            type='refund',
-            title='Refund Policy',
+            type='return',
             content='Original refund policy'
         )
         
         data = {'content': 'Hacked content'}
         response = authenticated_client.patch(
-            f'{self.base_url}{policy.id}/',
+            f'{self.base_url}{policy.type}/',
             data,
             format='json'
         )
@@ -219,12 +216,11 @@ class TestPolicyManagement:
         """Test unauthenticated user cannot update policy."""
         policy = Policy.objects.create(
             type='shipping',
-            title='Shipping Policy',
             content='Original shipping policy'
         )
         
         data = {'content': 'Hacked content'}
-        response = api_client.patch(f'{self.base_url}{policy.id}/', data, format='json')
+        response = api_client.patch(f'{self.base_url}{policy.type}/', data, format='json')
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
@@ -236,23 +232,25 @@ class TestPolicyEdgeCases:
     
     base_url = '/api/policies/'
     
-    def test_retrieve_nonexistent_policy(self, api_client):
-        """Test retrieving non-existent policy."""
-        response = api_client.get(f'{self.base_url}999999/')
+    def test_retrieve_nonexistent_policy(self, api_client, db):
+        """Test retrieving a valid-but-unconfigured policy type returns 404.
+
+        Policies are looked up by type (shipping/return); a valid type with no
+        row yields 404, while an invalid type yields 400."""
+        response = api_client.get(f'{self.base_url}shipping/')
         assert response.status_code == status.HTTP_404_NOT_FOUND
     
     def test_policy_xss_in_content(self, admin_client, db, malicious_inputs):
         """Test XSS payloads in policy content."""
         policy = Policy.objects.create(
-            type='test_policy',
-            title='Test Policy',
+            type='shipping',
             content='Original content'
         )
         
         for payload in malicious_inputs.XSS_PAYLOADS:
             data = {'content': payload}
             response = admin_client.patch(
-                f'{self.base_url}{policy.id}/',
+                f'{self.base_url}{policy.type}/',
                 data,
                 format='json'
             )
@@ -261,15 +259,14 @@ class TestPolicyEdgeCases:
     def test_policy_sql_injection_in_content(self, admin_client, db, malicious_inputs):
         """Test SQL injection in policy content."""
         policy = Policy.objects.create(
-            type='sql_test',
-            title='SQL Test Policy',
+            type='return',
             content='Original'
         )
         
         for payload in malicious_inputs.SQL_INJECTION:
             data = {'content': payload}
             response = admin_client.patch(
-                f'{self.base_url}{policy.id}/',
+                f'{self.base_url}{policy.type}/',
                 data,
                 format='json'
             )
@@ -285,9 +282,11 @@ class TestReceivableAccount:
     base_url = '/api/receivable-accounts/'
     
     def test_list_receivable_accounts_authenticated(self, authenticated_client):
-        """Test authenticated user can list receivable accounts."""
+        """Test a regular (non-admin) user is forbidden from receivable accounts.
+
+        ReceivableAccountViewSet is IsAdminUser-only (payment collection data)."""
         response = authenticated_client.get(self.base_url)
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == status.HTTP_403_FORBIDDEN
     
     def test_list_receivable_accounts_unauthenticated(self, api_client):
         """Test unauthenticated user cannot list receivable accounts."""

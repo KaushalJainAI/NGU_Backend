@@ -38,16 +38,41 @@ class TestReviewCreation:
         response = api_client.post(self.base_url, data, format='json')
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
     
-    def test_create_combo_review(self, authenticated_client, test_combo):
-        """Test creating review for a combo."""
+    def test_create_combo_review(self, authenticated_client, test_user, test_combo):
+        """Test creating review for a purchased combo."""
+        # Verified-purchase is enforced: the user must have ordered this combo
+        # in a confirmed/delivered order. Set that up first.
+        from decimal import Decimal
+        from orders.models import Order, OrderItem
+        order = Order.objects.create(
+            user=test_user,
+            shipping_address='123 Test Street',
+            phone_number='1234567890',
+            payment_method='COD',
+            subtotal=Decimal('250.00'),
+            tax=Decimal('25.00'),
+            total_amount=Decimal('275.00'),
+            status='delivered',
+        )
+        OrderItem.objects.create(
+            order=order,
+            combo=test_combo,
+            item_type='combo',
+            product_name=test_combo.name,
+            product_weight='',
+            quantity=1,
+            price=test_combo.final_price,
+            final_price=test_combo.final_price,
+        )
         data = {
             'combo': test_combo.id,
             'item_type': 'combo',
             'rating': 4,
+            'title': 'Nice combo',
             'comment': 'Nice combo!'
         }
         response = authenticated_client.post(self.base_url, data, format='json')
-        assert response.status_code == status.HTTP_201_CREATED
+        assert response.status_code == status.HTTP_201_CREATED, response.data
 
 
 # ==================== DUPLICATE REVIEW PREVENTION ====================

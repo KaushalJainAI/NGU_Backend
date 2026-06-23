@@ -1,0 +1,55 @@
+from rest_framework import serializers
+
+from .agent import MAX_MESSAGE_LEN
+from .models import AssistantConversation, AssistantMessage
+
+
+class AssistantChatRequestSerializer(serializers.Serializer):
+    message = serializers.CharField(max_length=MAX_MESSAGE_LEN, trim_whitespace=True)
+    conversation_id = serializers.UUIDField(required=False, allow_null=True)
+    anon_session = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    language = serializers.CharField(max_length=16, required=False, allow_blank=True)
+
+
+class ConversationSummarySerializer(serializers.ModelSerializer):
+    last_message = serializers.SerializerMethodField()
+    user_email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AssistantConversation
+        fields = [
+            'conversation_id', 'title', 'status', 'needs_human',
+            'last_message', 'user_email', 'updated_at', 'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_last_message(self, obj):
+        # Prefer the value annotated on the queryset (avoids an N+1 when the
+        # view annotates `last_message_content`); fall back to a query for
+        # single-object serialization (create / patch responses).
+        annotated = getattr(obj, 'last_message_content', False)
+        if annotated is not False:
+            return (annotated or '')[:120]
+        msg = obj.messages.filter(role__in=['user', 'assistant', 'admin']) \
+            .order_by('-created_at', '-id').first()
+        return msg.content[:120] if msg else ''
+
+    def get_user_email(self, obj):
+        return obj.user.email if obj.user else None
+
+
+class MessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AssistantMessage
+        fields = ['id', 'role', 'content', 'sender_name', 'created_at']
+        read_only_fields = fields
+
+
+class AdminReplySerializer(serializers.Serializer):
+    message = serializers.CharField(max_length=2000, trim_whitespace=True)
+
+
+class ConversationPatchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AssistantConversation
+        fields = ['status', 'assigned_to', 'needs_human', 'title']

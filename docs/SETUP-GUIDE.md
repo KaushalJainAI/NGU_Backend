@@ -1,484 +1,291 @@
-# COMPLETE SETUP AND INSTALLATION GUIDE
-## Django REST Framework Spices E-commerce Backend
+# Local Development Setup Guide
+
+Django REST Framework backend for NGU Spices.
 
 ---
 
-## 📋 TABLE OF CONTENTS
+## Prerequisites
 
-1. [Initial Setup](#initial-setup)
-2. [Project Structure](#project-structure)
-3. [Installation Steps](#installation-steps)
-4. [Database Setup](#database-setup)
-5. [Running the Application](#running-the-application)
-6. [API Testing](#api-testing)
-7. [Troubleshooting](#troubleshooting)
+- Python 3.11+
+- PostgreSQL 15+ (required; SQLite not supported — the app relies on PG-specific features)
+- Redis (optional locally; falls back to in-memory cache)
+- Node.js 18+ (for Frontend / Admin Panel)
+- Docker + Docker Compose (optional — can run Redis and Postgres via Docker)
 
 ---
 
-## 🚀 INITIAL SETUP
+## Quick Start (Manual — Recommended for Dev)
 
-### Step 1: Create Project Directory
+### 1. Clone & enter the repo
 
 ```bash
-# Create and navigate to project directory
-mkdir spices_ecommerce
-cd spices_ecommerce
-
-# Initialize git (optional)
-git init
+cd NGU/Backend
 ```
 
-### Step 2: Create Virtual Environment
+### 2. Create a virtual environment
 
 ```bash
-# Create virtual environment
 python -m venv venv
 
-# Activate virtual environment
-# On Windows:
+# Windows:
 venv\Scripts\activate
-
-# On macOS/Linux:
+# macOS/Linux:
 source venv/bin/activate
-
-# Verify activation (should show (venv) in terminal)
 ```
 
-### Step 3: Install Dependencies
+### 3. Install dependencies
 
 ```bash
-# Upgrade pip
 pip install --upgrade pip
-
-# Install from requirements.txt
 pip install -r requirements.txt
 ```
 
----
+### 4. Set up environment variables
 
-## 📁 PROJECT STRUCTURE
-
-Create this folder structure:
-
-```
-spices_ecommerce/
-│
-├── spices_backend/          # Project config folder
-│   ├── __init__.py
-│   ├── settings.py          # Main settings file
-│   ├── urls.py              # Main URL configuration
-│   ├── asgi.py
-│   └── wsgi.py
-│
-├── users/                   # User app
-│   ├── migrations/
-│   ├── __init__.py
-│   ├── admin.py
-│   ├── apps.py
-│   ├── models.py
-│   ├── serializers.py
-│   ├── views.py
-│   ├── tests.py
-│   └── urls.py
-│
-├── products/                # Products app
-│   ├── migrations/
-│   ├── __init__.py
-│   ├── admin.py
-│   ├── apps.py
-│   ├── models.py
-│   ├── serializers.py
-│   ├── views.py
-│   ├── tests.py
-│   └── urls.py
-│
-├── cart/                    # Cart app
-│   ├── migrations/
-│   ├── __init__.py
-│   ├── admin.py
-│   ├── apps.py
-│   ├── models.py
-│   ├── serializers.py
-│   ├── views.py
-│   └── urls.py
-│
-├── orders/                  # Orders app
-│   ├── migrations/
-│   ├── __init__.py
-│   ├── admin.py
-│   ├── apps.py
-│   ├── models.py
-│   ├── serializers.py
-│   ├── views.py
-│   └── urls.py
-│
-├── payments/                # Payments app
-│   ├── migrations/
-│   ├── __init__.py
-│   ├── admin.py
-│   ├── apps.py
-│   ├── models.py
-│   ├── serializers.py
-│   ├── views.py
-│   └── urls.py
-│
-├── reviews/                 # Reviews app
-│   ├── migrations/
-│   ├── __init__.py
-│   ├── admin.py
-│   ├── apps.py
-│   ├── models.py
-│   ├── serializers.py
-│   ├── views.py
-│   └── urls.py
-│
-├── media/                   # User uploaded files
-├── staticfiles/             # Static files
-├── .env                     # Environment variables
-├── .env.example             # Example env file
-├── .gitignore               # Git ignore file
-├── requirements.txt         # Python dependencies
-├── manage.py                # Django management
-└── db.sqlite3              # Database (development only)
-```
-
----
-
-## 📦 INSTALLATION STEPS
-
-### Step 1: Create Django Project and Apps
+A ready-to-use local dev env file is provided. Copy it:
 
 ```bash
-# Navigate to project directory
-cd spices_ecommerce
-
-# Create Django project
-django-admin startproject spices_backend .
-
-# Create Django apps
-python manage.py startapp users
-python manage.py startapp products
-python manage.py startapp cart
-python manage.py startapp orders
-python manage.py startapp payments
-python manage.py startapp reviews
+# Windows:
+copy .env.dev .env
+# macOS/Linux:
+cp .env.dev .env
 ```
 
-### Step 2: Copy Configuration Files
+`.env.dev` configures:
+- `DEBUG=True`, SQLite-free local Postgres (`ngu_local` on `127.0.0.1:5432`)
+- Redis at `127.0.0.1:6379`
+- `USE_CLOUDINARY=False` / `USE_S3=False` — media stored locally
+- Email printed to console (no SMTP needed)
+- LLM key left blank (AI features gracefully disabled)
 
-1. **Copy settings.py** - Replace the generated `spices_backend/settings.py` with the provided `settings.py` file
+Edit `.env` to fill in `LLM_API_KEY` if you want AI search/assistant locally.
 
-2. **Copy .env file**:
+### 5. Start Redis + Postgres (via Docker, optional)
+
+If you don't have Postgres/Redis installed natively:
+
 ```bash
-# Create .env file from example
-cp .env.example .env
-
-# Edit .env with your settings
-# Important: Change SECRET_KEY for production
+# From the NGU root — starts only redis (postgres is commented out in compose)
+docker-compose up redis -d
 ```
 
-3. **Copy all model files**:
-   - Copy User model from `all-models.py` into `users/models.py`
-   - Copy Category, Product, ProductImage models into `products/models.py`
-   - Copy Cart, CartItem models into `cart/models.py`
-   - Copy Order, OrderItem models into `orders/models.py`
-   - Copy Payment model into `payments/models.py`
-   - Copy Review model into `reviews/models.py`
-
-4. **Copy all serializer files**:
-   - Copy user serializers into `users/serializers.py`
-   - Copy product serializers into `products/serializers.py`
-   - Copy cart serializers into `cart/serializers.py`
-   - Copy order serializers into `orders/serializers.py`
-   - Copy payment serializers into `payments/serializers.py`
-   - Copy review serializers into `reviews/serializers.py`
-
-5. **Copy all view files**:
-   - Copy user views into `users/views.py`
-   - Copy product views into `products/views.py`
-   - Copy cart views into `cart/views.py`
-   - Copy order views into `orders/views.py`
-   - Copy review views into `reviews/views.py`
-
-6. **Copy URLs and Admin files**:
-   - Copy URL configuration into `spices_backend/urls.py`
-   - Copy each app's admin configuration into respective `app/admin.py`
-
----
-
-## 🗄️ DATABASE SETUP
-
-### Step 1: Create Migrations
+For Postgres, either install it natively or uncomment the `postgres` service in
+`docker-compose.yml` and start it:
 
 ```bash
-# Create migration files for all models
-python manage.py makemigrations
+docker-compose up redis postgres -d
+```
 
-# Apply migrations to database
+Then create the local database:
+
+```bash
+psql -U postgres -c "CREATE USER ngu WITH PASSWORD 'ngu_local_pw';"
+psql -U postgres -c "CREATE DATABASE ngu_local OWNER ngu;"
+```
+
+### 6. Run migrations & create superuser
+
+```bash
 python manage.py migrate
+python manage.py createsuperuser
 ```
 
-### Step 2: Create Superuser
+### 7. (Optional) Warm the AI search knowledge base
 
 ```bash
-# Create admin user
+python manage.py populate_search_kb
+```
+
+Requires `LLM_API_KEY` in `.env`. Skip if you don't have a key — search falls back
+to name/slug/token matching.
+
+### 8. Run the backend
+
+```bash
+python manage.py runserver
+```
+
+- **API**: `http://localhost:8000/api/`
+- **Django Admin**: `http://localhost:8000/admin/`
+- **Swagger Docs**: `http://localhost:8000/api/docs/` (DEBUG mode only)
+
+---
+
+## Running the Frontend / Admin Panel
+
+```bash
+# Customer storefront — http://localhost:5173
+cd Frontend/nidhi-brand-forge
+npm install
+npm run dev
+
+# Admin panel — http://localhost:5174
+cd "Admin Panel/e-commerce-command-center"
+npm install
+npm run dev
+```
+
+Both Vite apps pick up `VITE_API_URL` from their local `.env.development` files.
+
+---
+
+## Running with Docker Compose
+
+`docker-compose.yml` is a full-stack compose (production-style) that puts the
+frontend on port 80 and keeps backend/admin internal.  It requires a
+`DATABASE_URL` env var pointing at an external Postgres instance.
+
+It is **not** the recommended local dev workflow; use the manual approach above
+unless you specifically need to test the Dockerised build.
+
+```bash
+# From NGU root — provide your DATABASE_URL in the shell or a root .env
+DATABASE_URL=postgresql://ngu:ngu_local_pw@localhost:5432/ngu_local docker-compose up --build
+```
+
+Accessible endpoints when running via Docker Compose:
+- **Frontend + API (proxied)**: `http://localhost`
+- **Admin Panel**: not published to a host port by default
+
+---
+
+## Full Environment Variable Reference
+
+`Backend/.env.example` is the canonical reference. Key vars:
+
+```env
+# --- Core ---
+SECRET_KEY=your-50-char-random-key    # generate: python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174
+CSRF_TRUSTED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:8000
+SECURE_SSL_REDIRECT=False
+
+# --- Database (PostgreSQL required) ---
+DB_ENGINE=django.db.backends.postgresql
+DB_NAME=ngu_local
+DB_USER=ngu
+DB_PASSWORD=ngu_local_pw
+DB_HOST=127.0.0.1
+DB_PORT=5432
+
+# --- Redis (optional) ---
+REDIS_URL=redis://127.0.0.1:6379/0
+
+# --- Media storage ---
+USE_CLOUDINARY=False         # True in production (hard startup dependency)
+# CLOUDINARY_CLOUD_NAME=...
+# CLOUDINARY_API_KEY=...
+# CLOUDINARY_API_SECRET=...
+
+USE_S3=False                 # True in production for static files
+# AWS_ACCESS_KEY_ID=...
+# AWS_SECRET_ACCESS_KEY=...
+# AWS_STORAGE_BUCKET_NAME=...
+# AWS_S3_REGION_NAME=ap-south-1
+
+# --- Email ---
+EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend  # prints to terminal in dev
+
+# --- Payments ---
+# RAZORPAY_KEY_ID=...
+# RAZORPAY_KEY_SECRET=...
+
+# --- AI (search synonyms + shopping assistant) ---
+# LLM_API_KEY=...
+MODEL_PROVIDER=openrouter
+LLM_MODEL=openai/gpt-4o-mini
+# Optional: override model used specifically by the assistant
+# ASSISTANT_MODEL_PROVIDER=openrouter
+# ASSISTANT_LLM_MODEL=openai/gpt-4o-mini
+
+# --- Google OAuth (optional for local dev) ---
+# GOOGLE_CLIENT_ID=...
+# GOOGLE_CLIENT_SECRET=...
+```
+
+---
+
+## Project Structure
+
+```
+Backend/
+├── spices_backend/      # Project config (settings, urls, wsgi)
+├── users/               # Auth, profiles, JWT, Google OAuth
+├── products/            # Catalog, search engine, recommendations
+├── cart/                # Shopping cart, favorites
+├── orders/              # Order lifecycle, coupons
+├── payments/            # Razorpay, payment methods
+├── reviews/             # Verified-purchase reviews
+├── admin_panel/         # Dashboard, coupons, policies
+├── support/             # Contact forms, order-scoped chat
+├── assistant/           # AI shopping assistant
+├── analytics/           # Behavioral event ingest
+├── docs/                # This documentation
+├── requirements.txt
+├── manage.py
+├── .env.dev             # Safe local dev defaults (no real secrets)
+├── .env.example         # Full env var reference
+└── Dockerfile
+```
+
+---
+
+## Running Tests
+
+```bash
+python manage.py test
+# or with pytest:
+pytest
+```
+
+---
+
+## Useful Management Commands
+
+```bash
+# Migrations
+python manage.py makemigrations
+python manage.py migrate
+
+# Superuser
 python manage.py createsuperuser
 
-# Follow the prompts:
-# Email: admin@example.com
-# Username: admin
-# Password: ••••••••
-# Password (again): ••••••••
-```
-
-### Step 3: Create Sample Data (Optional)
-
-Create a `load_sample_data.py` script in project root:
-
-```python
-import os
-import django
-
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'spices_backend.settings')
-django.setup()
-
-from products.models import Category, Product
-from decimal import Decimal
-
-# Create categories
-categories = [
-    Category.objects.create(name='Whole Spices', description='Premium whole spices'),
-    Category.objects.create(name='Spice Powders', description='Finely ground spice powders'),
-    Category.objects.create(name='Spice Blends', description='Pre-mixed spice blends'),
-    Category.objects.create(name='Organic Spices', description='Certified organic spices'),
-]
-
-# Create sample products
-products_data = [
-    {
-        'name': 'Black Pepper',
-        'category': categories[0],
-        'description': 'Premium black pepper from Kerala',
-        'spice_form': 'whole',
-        'price': Decimal('250.00'),
-        'discount_price': Decimal('200.00'),
-        'stock': 100,
-        'weight': '100g',
-        'organic': True,
-    },
-    {
-        'name': 'Turmeric Powder',
-        'category': categories[1],
-        'description': 'Pure turmeric powder',
-        'spice_form': 'powder',
-        'price': Decimal('150.00'),
-        'stock': 200,
-        'weight': '250g',
-        'organic': True,
-    },
-    {
-        'name': 'Garam Masala',
-        'category': categories[2],
-        'description': 'Traditional Indian spice blend',
-        'spice_form': 'mixed',
-        'price': Decimal('300.00'),
-        'stock': 150,
-        'weight': '100g',
-    },
-]
-
-for data in products_data:
-    Product.objects.create(**data)
-
-print("Sample data loaded successfully!")
-```
-
-Run it:
-```bash
-python load_sample_data.py
-```
-
----
-
-## ▶️ RUNNING THE APPLICATION
-
-### Start Development Server
-
-```bash
-# Run development server
-python manage.py runserver
-
-# Server will start at http://127.0.0.1:8000/
-```
-
-### Access the Application
-
-- **Admin Panel**: http://localhost:8000/admin/
-- **API Browsable**: http://localhost:8000/api/
-- **API Docs (Swagger)**: http://localhost:8000/api/docs/
-
----
-
-## 🧪 API TESTING
-
-### Using Postman or Thunder Client
-
-1. **Register User**:
-```
-POST http://localhost:8000/api/auth/register/
-Content-Type: application/json
-
-{
-    "username": "testuser",
-    "email": "test@example.com",
-    "password": "SecurePass123!",
-    "password2": "SecurePass123!",
-    "phone": "9876543210"
-}
-```
-
-2. **Login**:
-```
-POST http://localhost:8000/api/auth/login/
-Content-Type: application/json
-
-{
-    "email": "test@example.com",
-    "password": "SecurePass123!"
-}
-```
-
-Response:
-```json
-{
-    "refresh": "eyJ0eXAiOiJKV1QiLCJhbGc...",
-    "access": "eyJ0eXAiOiJKV1QiLCJhbGc..."
-}
-```
-
-3. **Get Products**:
-```
-GET http://localhost:8000/api/products/
-Authorization: Bearer YOUR_ACCESS_TOKEN
-```
-
-4. **Add to Cart**:
-```
-POST http://localhost:8000/api/cart/add_item/
-Authorization: Bearer YOUR_ACCESS_TOKEN
-Content-Type: application/json
-
-{
-    "product_id": 1,
-    "quantity": 2
-}
-```
-
-5. **Create Order**:
-```
-POST http://localhost:8000/api/orders/
-Authorization: Bearer YOUR_ACCESS_TOKEN
-Content-Type: application/json
-
-{
-    "shipping_address": "123 Main St",
-    "shipping_city": "Delhi",
-    "shipping_state": "Delhi",
-    "shipping_pincode": "110001",
-    "phone": "9876543210",
-    "payment_method": "cod"
-}
-```
-
----
-
-## 🐛 TROUBLESHOOTING
-
-### Common Issues and Solutions
-
-**Issue 1: ModuleNotFoundError: No module named 'decouple'**
-```bash
-pip install python-decouple
-```
-
-**Issue 2: No such table: auth_user**
-```bash
-python manage.py migrate
-```
-
-**Issue 3: STATIC_ROOT or MEDIA_ROOT issues**
-```bash
-# Create directories
-mkdir media staticfiles
+# Static files (production)
 python manage.py collectstatic
-```
 
-**Issue 4: Port 8000 already in use**
-```bash
-python manage.py runserver 8001
-```
+# AI search KB
+python manage.py populate_search_kb          # warm KB for all products
+python manage.py populate_search_kb --force  # force regenerate even fresh entries
 
-**Issue 5: Secret key is not secure**
-```python
-# Generate new secret key
-from django.core.management.utils import get_random_secret_key
-print(get_random_secret_key())
+# Media migration (one-time, S3 → Cloudinary)
+python manage.py migrate_s3_to_cloudinary
+python manage.py migrate_s3_to_cloudinary --apply
 
-# Update in .env
-SECRET_KEY=your-new-generated-key
+# Django shell
+python manage.py shell
 ```
 
 ---
 
-## 📝 IMPORTANT NOTES
+## Common Issues
 
-1. **Never commit .env file** - Add to .gitignore
-2. **Change SECRET_KEY** in production
-3. **Use PostgreSQL** in production instead of SQLite
-4. **Enable HTTPS** for production
-5. **Set DEBUG=False** in production
-6. **Use environment variables** for sensitive data
-
----
-
-## 🎯 QUICK START CHECKLIST
-
-- [ ] Create virtual environment
-- [ ] Install dependencies
-- [ ] Create Django project and apps
-- [ ] Copy configuration files
-- [ ] Copy models, serializers, views
-- [ ] Create and apply migrations
-- [ ] Create superuser
-- [ ] Load sample data
-- [ ] Start development server
-- [ ] Test API endpoints
-- [ ] Configure frontend integration
+| Issue | Solution |
+|-------|----------|
+| `ModuleNotFoundError: No module named 'decouple'` | `pip install python-decouple` |
+| `No such table: auth_user` | `python manage.py migrate` |
+| Backend crash-loops in Docker | Missing `CLOUDINARY_*` env vars — check `docker logs ngu-backend` |
+| Search returns no results | Run `python manage.py populate_search_kb` to warm the KB |
+| Port 8000 already in use | `python manage.py runserver 8001` |
+| `connection refused` on DB | Ensure Postgres is running and `DB_*` vars match your local instance |
 
 ---
 
-## 📚 USEFUL COMMANDS
+## Important Notes
 
-```bash
-# Database operations
-python manage.py makemigrations          # Create migrations
-python manage.py migrate                 # Apply migrations
-python manage.py createsuperuser         # Create admin user
-
-# Development
-python manage.py runserver               # Start dev server
-python manage.py shell                   # Python shell with Django
-
-# Static files
-python manage.py collectstatic           # Collect static files
-
-# Cleaning
-python manage.py flush                   # Reset database
-
-# Testing
-python manage.py test                    # Run tests
-```
-
----
-
-**Setup Complete! 🎉 Your Django REST Framework backend is ready to use.**
+1. **Never commit `.env`** — it is in `.gitignore`; use `.env.dev` as your starting point
+2. **PostgreSQL is required** — SQLite is not supported (app uses PG-specific features)
+3. **Cloudinary is a hard dependency in production** — `USE_CLOUDINARY=True` with all three `CLOUDINARY_*` vars required; locally set `USE_CLOUDINARY=False`
+4. **`SECRET_KEY` must be unique and long** — `.env.dev` ships a placeholder; change it for any shared or deployed environment
+5. **`DEBUG=False` in production** — also set `ALLOWED_HOSTS` to your real domain

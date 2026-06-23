@@ -15,6 +15,7 @@ CACHE_PREFIX_PRODUCTS = 'products'
 CACHE_PREFIX_CATEGORIES = 'categories'
 CACHE_PREFIX_COMBOS = 'combos'
 CACHE_PREFIX_SECTIONS = 'sections'
+CACHE_PREFIX_SEARCH = 'search'
 
 # Default TTLs (use from settings if available)
 TTL_SHORT = getattr(settings, 'CACHE_TTL_SHORT', 60)
@@ -111,12 +112,26 @@ def invalidate_combo_cache():
     invalidate_by_prefix(CACHE_PREFIX_SECTIONS)
 
 
+def get_search_corpus_key() -> str:
+    """Cache key for the assembled fuzzy-search corpus."""
+    return make_cache_key(CACHE_PREFIX_SEARCH, 'corpus', 'v1')
+
+
+def invalidate_search_cache():
+    """Invalidate the search corpus and suggest-response caches."""
+    invalidate_by_prefix(CACHE_PREFIX_SEARCH)
+    # Pattern invalidation is a no-op on the locmem backend (dev/tests);
+    # delete the corpus key directly so it is never stale there.
+    cache.delete(get_search_corpus_key())
+
+
 def invalidate_all_caches():
     """Invalidate all product, combo, category and section caches."""
     invalidate_by_prefix(CACHE_PREFIX_PRODUCTS)
     invalidate_by_prefix(CACHE_PREFIX_CATEGORIES)
     invalidate_by_prefix(CACHE_PREFIX_COMBOS)
     invalidate_by_prefix(CACHE_PREFIX_SECTIONS)
+    invalidate_by_prefix(CACHE_PREFIX_SEARCH)
 
 
 # Cache key generators for specific use cases

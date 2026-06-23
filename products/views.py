@@ -1,14 +1,16 @@
 from rest_framework import viewsets, filters, status
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 from rest_framework.response import Response
-from rest_framework.decorators import api_view, action
+from rest_framework.decorators import api_view, action, throttle_classes
+from rest_framework.throttling import SimpleRateThrottle
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.core.cache import cache
 from django.conf import settings
+from django.utils.translation import get_language
 
-from .models import Category, Product, ProductCombo, ProductImage, ProductSection
+from .models import Category, Product, ProductCombo, ProductImage, ProductSection, ProductVariant
 from .serializers import (
     CategorySerializer,
     ProductListSerializer,
@@ -16,13 +18,16 @@ from .serializers import (
     ProductComboSerializer,
     ProductImageSerializer,
     HomepageSectionSerializer,
+    ProductVariantWriteSerializer,
 )
 from .cache import (
     make_cache_key,
+    get_cached_or_set,
     CACHE_PREFIX_PRODUCTS,
     CACHE_PREFIX_CATEGORIES,
     CACHE_PREFIX_COMBOS,
     CACHE_PREFIX_SECTIONS,
+    CACHE_PREFIX_SEARCH,
     TTL_MEDIUM,
     TTL_LONG,
 )
@@ -71,7 +76,9 @@ class CategoryViewSet(viewsets.ModelViewSet):
         if request.user and request.user.is_staff:
             return super().list(request, *args, **kwargs)
         
-        cache_key = make_cache_key(CACHE_PREFIX_CATEGORIES, 'list')
+        # Include the active language so translated content isn't served stale
+        # across languages.
+        cache_key = make_cache_key(CACHE_PREFIX_CATEGORIES, 'list', lang=get_language())
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
@@ -141,10 +148,10 @@ class ProductViewSet(viewsets.ModelViewSet):
                 'weight', 'badge', 'is_featured', 'stock', 'organic',
                 'spice_form', 'category__id', 'category__name', 'category__slug',
                 'created_at', 'is_active'
-            )
+            ).prefetch_related('variants')
         else:
             # For detail views, prefetch related data
-            qs = qs.prefetch_related('images', 'sections')
+            qs = qs.prefetch_related('images', 'sections', 'variants')
         return qs
 
     def get_serializer_class(self):
@@ -179,21 +186,38 @@ class ProductViewSet(viewsets.ModelViewSet):
         lookup_value = kwargs.get('slug')
         qs = self.get_queryset()
         
-        try:
-            if lookup_value and lookup_value.isdigit():
-                # Numeric ID lookup
-                instance = get_object_or_404(qs, id=int(lookup_value))
-            else:
-                # Slug lookup
-                instance = get_object_or_404(qs, slug=lookup_value)
-        except Product.DoesNotExist:
+        selected_variant_id = None
+        if lookup_value and lookup_value.isdigit():
+            # Numeric ID lookup
+            instance = qs.filter(id=int(lookup_value)).first()
+        else:
+            # Slug lookup — first as a product, then fall back to a variant slug
+            # so per-size URLs (e.g. /products/jeeravan-500g) resolve to the
+            # parent product with that size pre-selected.
+            instance = qs.filter(slug=lookup_value).first()
+            if instance is None:
+                from .models import ProductVariant
+                variant = (
+                    ProductVariant.objects.select_related('product')
+                    .filter(slug=lookup_value, is_active=True)
+                    .first()
+                )
+                if variant is not None:
+                    selected_variant_id = variant.id
+                    instance = qs.filter(id=variant.product_id).first()
+
+        if instance is None:
             return Response(
                 {"detail": "No Product matches the given query."},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         serializer = self.get_serializer(instance)
-        return Response(serializer.data)
+        data = serializer.data
+        if selected_variant_id is not None:
+            data = dict(data)
+            data['selected_variant_id'] = selected_variant_id
+        return Response(data)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -204,8 +228,8 @@ class ProductViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def sections(self, request):
         """Get all active product sections with their products and combos - CACHED & SERIALIZED"""
-        # Check cache for non-staff users
-        cache_key = make_cache_key(CACHE_PREFIX_SECTIONS, 'all')
+        # Check cache for non-staff users (keyed by language for translations)
+        cache_key = make_cache_key(CACHE_PREFIX_SECTIONS, 'all', lang=get_language())
         if not (request.user and request.user.is_staff):
             cached = cache.get(cache_key)
             if cached is not None:
@@ -324,7 +348,60 @@ class ProductImageViewSet(viewsets.ModelViewSet):
         if product_id:
             qs = qs.filter(product_id=product_id)
         return qs
-    
+
+
+class ProductVariantViewSet(viewsets.ModelViewSet):
+    """Admin CRUD for product packaging sizes (variants).
+
+    GET is public (so the admin panel can list); writes are staff-only.
+    Filter by ?product=<id>. Ensures a single default per product and never
+    hard-deletes a variant referenced by an order (deactivates instead)."""
+    serializer_class = ProductVariantWriteSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = ProductVariant.objects.select_related('product')
+        product_id = self.request.query_params.get('product')
+        if product_id:
+            qs = qs.filter(product_id=product_id)
+        return qs.order_by('product_id', 'display_order', 'weight')
+
+    def _unset_other_defaults(self, product_id, exclude_pk=None):
+        qs = ProductVariant.objects.filter(product_id=product_id, is_default=True)
+        if exclude_pk:
+            qs = qs.exclude(pk=exclude_pk)
+        qs.update(is_default=False)
+
+    def perform_create(self, serializer):
+        product = serializer.validated_data.get('product')
+        if serializer.validated_data.get('is_default') and product:
+            self._unset_other_defaults(product.id)
+        serializer.save()
+
+    def perform_update(self, serializer):
+        if serializer.validated_data.get('is_default'):
+            self._unset_other_defaults(
+                serializer.instance.product_id, exclude_pk=serializer.instance.pk
+            )
+        serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        from django.db.models import ProtectedError
+        instance = self.get_object()
+        try:
+            instance.delete()
+        except ProtectedError:
+            # Referenced by historical orders — keep the row, just retire it.
+            instance.is_active = False
+            instance.is_default = False
+            instance.save(update_fields=['is_active', 'is_default'])
+            return Response(
+                {'detail': 'Variant is used by existing orders; it was deactivated instead of deleted.'},
+                status=status.HTTP_200_OK,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 from .recommendations import SpiceSearchEngine
 search_engine = SpiceSearchEngine()
@@ -341,7 +418,7 @@ def unified_search(request):
                         status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        threshold = int(request.GET.get('threshold', 60))
+        threshold = int(request.GET.get('threshold', 70))
     except (ValueError, TypeError):
         return Response({'success': False, 'error': 'threshold must be a valid integer'},
                         status=status.HTTP_400_BAD_REQUEST)
@@ -352,3 +429,63 @@ def unified_search(request):
     
     results = search_engine.unified_search(query, top_k, threshold)
     return Response(results)
+
+
+class SearchSuggestThrottle(SimpleRateThrottle):
+    """Dedicated autocomplete limit (per user, or per IP when anonymous), so the
+    keystroke-frequency endpoint doesn't share the generic anon/user budget."""
+    scope = 'search_suggest'
+
+    def get_cache_key(self, request, view):
+        ident = request.user.pk if request.user and request.user.is_authenticated \
+            else self.get_ident(request)
+        return self.cache_format % {'scope': self.scope, 'ident': ident}
+
+
+@api_view(['GET'])
+@throttle_classes([SearchSuggestThrottle])
+def search_suggest(request):
+    """Lightweight autocomplete suggestions over the cached search corpus."""
+    query = request.GET.get('q', '').strip().lower()
+
+    try:
+        limit = int(request.GET.get('limit', 8))
+    except (ValueError, TypeError):
+        limit = 8
+    limit = max(1, min(limit, 15))
+
+    if len(query) < 2:
+        return Response({'query': query, 'suggestions': []})
+
+    from .recommendations import build_suggestions
+    cache_key = make_cache_key(CACHE_PREFIX_SEARCH, 'suggest', query, limit)
+    payload = get_cached_or_set(cache_key, lambda: build_suggestions(query, limit), TTL_MEDIUM)
+    return Response(payload)
+
+
+@api_view(['GET'])
+def recommendations(request):
+    """
+    Personalized product recommendations for the logged-in user.
+
+    Anonymous callers get 401 — the frontend treats that as "show the static
+    sections". Cold-start / no-signal users get a featured-popular fallback.
+    """
+    if not request.user or not request.user.is_authenticated:
+        return Response({'detail': 'Authentication required'},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        limit = int(request.GET.get('limit', 12))
+    except (ValueError, TypeError):
+        limit = 12
+    limit = max(1, min(limit, 30))
+    context = request.GET.get('context', 'home')
+
+    from .personalization import get_recommendations
+    products = get_recommendations(request.user, limit=limit, context=context)
+    return Response({
+        'context': context,
+        'count': len(products),
+        'products': products,
+    })

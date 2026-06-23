@@ -16,6 +16,8 @@ USE_X_FORWARDED_HOST = config('USE_X_FORWARDED_HOST', default=False, cast=bool)
 
 # Application definition
 INSTALLED_APPS = [
+    # Must precede django.contrib.admin so translated fields appear in the admin.
+    'modeltranslation',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -30,8 +32,11 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'storages',
+    'cloudinary_storage',
+    'cloudinary',
     'django_filters',
-    
+    'adminsortable2',
+
     # Auth & Social Login
     'allauth',
     'allauth.account',
@@ -48,7 +53,9 @@ INSTALLED_APPS = [
     'payments.apps.PaymentsConfig',
     'reviews.apps.ReviewsConfig',
     'admin_panel.apps.AdminPanelConfig',
-    'support.apps.SupportConfig'
+    'support.apps.SupportConfig',
+    'assistant.apps.AssistantConfig',
+    'analytics.apps.AnalyticsConfig',
 ]
 
 MIDDLEWARE = [
@@ -56,6 +63,8 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
+    # Activates ?lang= / X-Language for modeltranslation content.
+    'spices_backend.middleware.LanguageQueryMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -117,13 +126,49 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Internationalization
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'en'
 TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
 USE_TZ = True
 
-# AWS S3 Configuration
+# Languages the storefront content can be translated into. Mirrors the frontend
+# src/i18n SUPPORTED_LANGUAGES and the chat assistant language codes.
+LANGUAGES = [
+    ('en', 'English'),
+    ('hi', 'Hindi'),
+    ('hinglish', 'Hinglish'),
+    ('gu', 'Gujarati'),
+    ('mr', 'Marathi'),
+    ('pa', 'Punjabi'),
+]
+
+# django-modeltranslation: per-language columns for Product/Category content.
+MODELTRANSLATION_DEFAULT_LANGUAGE = 'en'
+MODELTRANSLATION_LANGUAGES = ('en', 'hi', 'hinglish', 'gu', 'mr', 'pa')
+# Any empty translation transparently falls back to English so newly added
+# products (and untranslated fields) always render.
+MODELTRANSLATION_FALLBACK_LANGUAGES = ('en',)
+
+# Media / static storage configuration
+#
+# Media files (product/category/profile images, chat attachments) are served from
+# Cloudinary's image CDN when USE_CLOUDINARY is on (the storefront default), giving
+# fast global delivery. Static files (CSS/JS) continue to use S3 or local storage.
+#
+# Precedence for the `default` (media) storage backend:
+#   USE_CLOUDINARY  ->  Cloudinary   (preferred)
+#   USE_S3          ->  AWS S3
+#   neither         ->  local filesystem
+USE_CLOUDINARY = config('USE_CLOUDINARY', default=True, cast=bool)
 USE_S3 = config('USE_S3', default=False, cast=bool)
+
+if USE_CLOUDINARY:
+    CLOUDINARY_STORAGE = {
+        'CLOUD_NAME': config('CLOUDINARY_CLOUD_NAME'),
+        'API_KEY': config('CLOUDINARY_API_KEY'),
+        'API_SECRET': config('CLOUDINARY_API_SECRET'),
+        'PREFIX': 'ngu',  # namespace all NGU media under the ngu/ folder in Cloudinary
+    }
 
 if USE_S3:
     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
@@ -164,6 +209,20 @@ else:
     STATIC_ROOT = BASE_DIR / 'staticfiles'
     MEDIA_URL = '/media/'
     MEDIA_ROOT = BASE_DIR / 'media'
+
+# Cloudinary takes over the `default` (media) storage backend. Static files keep
+# whatever backend the S3/local branch above selected. Because Cloudinary's storage
+# returns absolute res.cloudinary.com URLs, MEDIA_URL is unused for media but is left
+# defined above as a harmless fallback.
+if USE_CLOUDINARY:
+    STORAGES = globals().get('STORAGES', {})
+    STORAGES.setdefault(
+        'staticfiles',
+        {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+    )
+    STORAGES['default'] = {
+        'BACKEND': 'cloudinary_storage.storage.MediaCloudinaryStorage',
+    }
 
 # File Upload Configuration (500MB limit for photos/videos)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
@@ -215,6 +274,11 @@ REST_FRAMEWORK = {
         'register': '3/minute',  # Registration: 3 per minute
         'contact': '5/hour',     # Contact form: 5 per hour
         'password_reset': '10/day',  # Password reset OTP: 10 per day
+        'assistant': '20/min',   # AI assistant: 20 messages per minute
+        'assistant_day': '500/day',  # AI assistant: hard daily cap (cost guard)
+        'events': '600/hour',    # Behavioral event ingest (batched on client)
+        'search_suggest': '60/min',  # Autocomplete: keystroke-friendly but bounded
+        'geocode': '60/hour',    # Reverse-geocode proxy (respects Nominatim policy)
     }
 }
 
@@ -282,6 +346,10 @@ CORS_ALLOWED_ORIGINS = config(
 # WARNING: Set to False in production! True bypasses the whitelist above
 CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
+
+# Allow the storefront's language header (used for modeltranslation content).
+from corsheaders.defaults import default_headers as _cors_default_headers
+CORS_ALLOW_HEADERS = list(_cors_default_headers) + ['x-language']
 
 CORS_ALLOW_METHODS = [
     'GET',

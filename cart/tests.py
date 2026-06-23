@@ -38,8 +38,10 @@ class TestCartOperations:
     
     def test_add_combo_to_cart(self, authenticated_client, test_combo):
         """Test adding a combo to cart."""
+        # The cart API identifies BOTH products and combos by product_id +
+        # item_type (see CartViewSet.add_item docstring), not a separate combo_id.
         data = {
-            'combo_id': test_combo.id,
+            'product_id': test_combo.id,
             'item_type': 'combo',
             'quantity': 1
         }
@@ -58,18 +60,23 @@ class TestCartOperations:
     
     def test_update_cart_item_quantity(self, authenticated_client, cart_with_items):
         """Test updating cart item quantity."""
+        # Items are addressed by product_id + item_type (the product/combo id),
+        # not the CartItem row id.
         cart_item = cart_with_items.items.first()
+        item_id = cart_item.product_id if cart_item.item_type == 'product' else cart_item.combo_id
         data = {
-            'item_id': cart_item.id,
+            'product_id': item_id,
+            'item_type': cart_item.item_type,
             'quantity': 5
         }
         response = authenticated_client.post(f'{self.base_url}update_item/', data, format='json')
         assert response.status_code == status.HTTP_200_OK
-    
+
     def test_remove_item_from_cart(self, authenticated_client, cart_with_items):
         """Test removing item from cart."""
         cart_item = cart_with_items.items.first()
-        data = {'item_id': cart_item.id}
+        item_id = cart_item.product_id if cart_item.item_type == 'product' else cart_item.combo_id
+        data = {'product_id': item_id, 'item_type': cart_item.item_type}
         response = authenticated_client.post(f'{self.base_url}remove_item/', data, format='json')
         assert response.status_code == status.HTTP_200_OK
     
@@ -281,10 +288,11 @@ class TestFavoritesOperations:
     
     def test_remove_favorite(self, authenticated_client, test_product, test_user):
         """Test removing product from favorites."""
-        # Create favorite first
-        favorite = Favorite.objects.create(user=test_user, product=test_product)
-        
-        response = authenticated_client.delete(f'{self.base_url}{favorite.id}/')
+        # destroy() looks up the favorite by product_id, so the URL pk is the
+        # product id (not the Favorite row id).
+        Favorite.objects.create(user=test_user, product=test_product)
+
+        response = authenticated_client.delete(f'{self.base_url}{test_product.id}/')
         assert response.status_code in [status.HTTP_200_OK, status.HTTP_204_NO_CONTENT]
     
     def test_sync_favorites(self, authenticated_client, test_product, test_product2):
@@ -346,17 +354,21 @@ class TestCouponValidation:
         assert 'discount_percent' in response.data or 'valid' in str(response.data).lower()
     
     def test_validate_expired_coupon(self, authenticated_client, expired_coupon):
-        """Test validating an expired coupon fails."""
+        """Test validating an expired coupon is reported invalid.
+
+        The endpoint always returns 200 and signals validity via the `valid`
+        flag in the body (see ValidateCouponAPIView)."""
         data = {'code': expired_coupon.code}
         response = authenticated_client.post(self.url, data, format='json')
-        # Should be rejected
-        assert response.status_code != status.HTTP_200_OK or 'error' in str(response.data).lower()
-    
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data.get('valid') is False
+
     def test_validate_nonexistent_coupon(self, authenticated_client):
-        """Test validating non-existent coupon fails."""
+        """Test validating non-existent coupon is reported invalid (200 + valid=False)."""
         data = {'code': 'NONEXISTENT'}
         response = authenticated_client.post(self.url, data, format='json')
-        assert response.status_code in [status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND]
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data.get('valid') is False
     
     def test_validate_empty_code(self, authenticated_client):
         """Test validating with empty code fails."""

@@ -26,6 +26,9 @@ class CartItemResponseSerializer(serializers.Serializer):
     subtotal = serializers.SerializerMethodField()
     stock = serializers.SerializerMethodField()
     in_stock = serializers.SerializerMethodField()
+    variant_id = serializers.SerializerMethodField()
+    variant_slug = serializers.SerializerMethodField()
+    weight = serializers.SerializerMethodField()
 
     def _get_item(self, obj):
         """Return the underlying Product or ProductCombo instance."""
@@ -33,6 +36,26 @@ class CartItemResponseSerializer(serializers.Serializer):
         if item_type == 'combo':
             return obj.combo
         return obj.product
+
+    def get_variant_id(self, obj):
+        variant = getattr(obj, 'variant', None)
+        return variant.id if variant else None
+
+    def get_variant_slug(self, obj):
+        variant = getattr(obj, 'variant', None)
+        return variant.slug if variant else None
+
+    def get_weight(self, obj):
+        variant = getattr(obj, 'variant', None)
+        if variant:
+            return variant.formatted_weight
+        item = self._get_item(obj)
+        if item and getattr(item, 'weight', None) and getattr(item, 'unit', None):
+            w = float(item.weight)
+            if w.is_integer():
+                w = int(w)
+            return f"{w}{item.unit}"
+        return None
 
     def get_id(self, obj):
         item = self._get_item(obj)
@@ -55,6 +78,9 @@ class CartItemResponseSerializer(serializers.Serializer):
         return item.image.url
 
     def get_price(self, obj):
+        variant = getattr(obj, 'variant', None)
+        if getattr(obj, 'item_type', 'product') == 'product' and variant:
+            return float(variant.final_price)
         item = self._get_item(obj)
         if not item:
             return 0
@@ -64,9 +90,11 @@ class CartItemResponseSerializer(serializers.Serializer):
 
     def get_originalPrice(self, obj):
         """
-        The original (non-discounted) price.
-        Product model uses .price for original and .discount_price for discounted.
+        The original (non-discounted) price (variant price for product lines).
         """
+        variant = getattr(obj, 'variant', None)
+        if getattr(obj, 'item_type', 'product') == 'product' and variant:
+            return float(variant.price)
         item = self._get_item(obj)
         if not item:
             return 0
@@ -81,6 +109,9 @@ class CartItemResponseSerializer(serializers.Serializer):
 
     def get_stock(self, obj):
         item_type = getattr(obj, 'item_type', 'product') or 'product'
+        variant = getattr(obj, 'variant', None)
+        if item_type == 'product' and variant:
+            return variant.stock
         item = self._get_item(obj)
         if not item:
             return 0
@@ -90,6 +121,9 @@ class CartItemResponseSerializer(serializers.Serializer):
 
     def get_in_stock(self, obj):
         item_type = getattr(obj, 'item_type', 'product') or 'product'
+        variant = getattr(obj, 'variant', None)
+        if item_type == 'product' and variant:
+            return variant.stock > 0
         item = self._get_item(obj)
         if not item:
             return False
@@ -113,7 +147,9 @@ class CartResponseSerializer(serializers.Serializer):
 
     def get_items(self, obj):
         cart = obj['cart']
-        cart_items = cart.items.select_related('product', 'product__category', 'combo').all()
+        cart_items = cart.items.select_related(
+            'product', 'product__category', 'combo', 'variant', 'variant__product'
+        ).all()
         return CartItemResponseSerializer(
             cart_items,
             many=True,

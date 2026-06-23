@@ -12,6 +12,22 @@ from rest_framework_simplejwt.tokens import RefreshToken
 User = get_user_model()
 
 
+# ==================== TEST ISOLATION ====================
+
+@pytest.fixture(autouse=True)
+def _reset_cache():
+    """Clear the cache around every test.
+
+    DRF throttles store request counts in the cache. Without this, counters
+    accumulate across tests in a run, so e.g. the 4th registration test trips
+    the '3/minute' limit and gets a 429 instead of the status under test. This
+    isolates each test (and also clears any cached search corpus / sections)."""
+    from django.core.cache import cache
+    cache.clear()
+    yield
+    cache.clear()
+
+
 # ==================== CLIENT FIXTURES ====================
 
 @pytest.fixture
