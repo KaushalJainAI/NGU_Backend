@@ -17,6 +17,7 @@ import logging
 
 from django.db.models import Count
 from django.utils import timezone
+from django.utils.translation import get_language
 
 from .models import Product
 from .serializers import SearchProductSerializer
@@ -238,7 +239,9 @@ def _global_popularity():
 
 
 def _cache_key(user_id, context, limit):
-    return make_cache_key(CACHE_PREFIX_RECS, user_id, context, limit)
+    # Include language so a user who switches language gets recommendations with
+    # translated product names rather than the cached English ones.
+    return make_cache_key(CACHE_PREFIX_RECS, user_id, context, limit, get_language())
 
 
 def get_recommendations(user, limit=12, context='home'):
