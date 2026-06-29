@@ -149,11 +149,15 @@ class Command(BaseCommand):
         lang = LANG_NAMES.get(lang_code, lang_code)
         if is_name:
             system = (
-                f"You translate Indian spice-store product/brand names into {lang}. "
-                "Transliterate brand names so they stay recognizable; render generic "
-                "spice words naturally in the target script. Reply with ONLY the "
-                "translated name — no quotes, notes, or alternatives."
-            )
+                f"You translate Indian spice-store product/combo names into {lang}. "
+                "Fully translate generic/descriptive words (e.g. 'Powder', 'Whole', "
+                "'Combo', 'Daily Essentials', 'Turmeric') into natural {lang} in the "
+                "target script. Keep proper brand names and well-known spice names that "
+                "have no common local equivalent recognizable (transliterate those into "
+                "the target script). The result must read naturally to a native speaker, "
+                "not as English in foreign letters. Reply with ONLY the translated name "
+                "— no quotes, notes, or alternatives."
+            ).replace("{lang}", lang)
         else:
             system = (
                 f"You are a professional e-commerce translator. Translate the user's "

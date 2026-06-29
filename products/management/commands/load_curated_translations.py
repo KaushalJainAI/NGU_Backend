@@ -1,8 +1,9 @@
 """Apply the human-curated translations file to the database.
 
 Reads products/fixtures/curated_translations.json (Claude-authored, high quality)
-and writes the per-language modeltranslation columns for the existing catalog.
-Newer products are handled separately by `translate_content` (OpenRouter).
+and writes the per-language modeltranslation columns for the existing catalog
+(products, categories, combos and reviews). Newer products are handled
+separately by `translate_content` (OpenRouter).
 
 Writes via .update() so it bypasses model save()/full_clean() (avoids the
 unrelated image-extension validation).
@@ -16,7 +17,7 @@ from pathlib import Path
 from django.core.management.base import BaseCommand
 from django.conf import settings
 
-from products.models import Product, Category
+from products.models import Product, Category, ProductCombo
 from reviews.models import Review
 
 FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "curated_translations.json"
@@ -24,6 +25,7 @@ FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "curated_translatio
 MODEL_MAP = {
     "products": Product,
     "categories": Category,
+    "combos": ProductCombo,
     "reviews": Review,
 }
 

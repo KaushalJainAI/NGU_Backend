@@ -42,3 +42,15 @@ CACHES = {
 
 # Speed up user fixtures
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
+# Tests must never touch the network. The base settings point media storage at
+# Cloudinary (USE_CLOUDINARY defaults True); without this override, every fixture
+# that attaches an image uploads to the real Cloudinary account — slow, flaky, and
+# rate-limited. In-memory storage keeps the uploaded filename (so extension
+# validators still see e.g. ".jpg") while staying entirely offline.
+USE_CLOUDINARY = False
+USE_S3 = False
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}

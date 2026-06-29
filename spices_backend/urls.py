@@ -35,7 +35,15 @@ from assistant.views import (
     AdminConversationReplyView,
     AdminConversationPatchView,
 )
-from analytics.views import ingest_events, reverse_geocode, user_geo
+from analytics.views import ingest_events, ingest_anon, reverse_geocode, user_geo
+from analytics.insights_views import (
+    overview as analytics_overview,
+    sales as analytics_sales,
+    funnel as analytics_funnel,
+    search_insights as analytics_search,
+    customers as analytics_customers,
+    anonymous as analytics_anonymous,
+)
 from products.views import recommendations
 
 router = DefaultRouter()
@@ -95,7 +103,16 @@ urlpatterns = [
 
     # Behavioral event ingest + personalized recommendations
     path('api/events/', ingest_events, name='events-ingest'),
+    path('api/anon-events/', ingest_anon, name='anon-events-ingest'),
     path('api/recommendations/', recommendations, name='recommendations'),
+
+    # Admin-only analytics insights (overview / sales / funnel / search / customers / anonymous)
+    path('api/analytics/overview/', analytics_overview, name='analytics-overview'),
+    path('api/analytics/sales/', analytics_sales, name='analytics-sales'),
+    path('api/analytics/funnel/', analytics_funnel, name='analytics-funnel'),
+    path('api/analytics/search/', analytics_search, name='analytics-search'),
+    path('api/analytics/customers/', analytics_customers, name='analytics-customers'),
+    path('api/analytics/anonymous/', analytics_anonymous, name='analytics-anonymous'),
 
     # Location: reverse-geocode proxy + coarse user-location upsert
     path('api/geocode/reverse/', reverse_geocode, name='geocode-reverse'),

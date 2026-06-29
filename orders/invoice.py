@@ -159,7 +159,7 @@ def generate_invoice_pdf(order) -> bytes:
         if order.coupon_code:
             label = f"Discount ({order.coupon_code})"
         tot_rows.append([label, "- " + _money(order.discount_amount)])
-    tot_rows.append(["GST (5%)", _money(order.tax)])
+    tot_rows.append(["GST", _money(order.tax)])
     tot_rows.append([
         "Shipping",
         "FREE" if (order.shipping_charge or 0) == 0 else _money(order.shipping_charge),

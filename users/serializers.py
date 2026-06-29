@@ -9,9 +9,22 @@ User = get_user_model()
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'name', 'first_name', 'last_name', 'phone', 
+        fields = ['id', 'username', 'email', 'name', 'first_name', 'last_name', 'phone',
                   'address', 'city', 'state', 'pincode', 'profile_picture', 'created_at']
         read_only_fields = ['id', 'created_at']
+
+    def validate_email(self, value):
+        # Profile updates can change email too, so apply the same canonical,
+        # case-insensitive uniqueness rule as registration — otherwise a case
+        # variant of another account's email hits the DB unique constraint and
+        # 500s instead of returning a clean 400 (and the rule is bypassed).
+        value = value.strip().lower()
+        qs = User.objects.filter(email__iexact=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
@@ -27,6 +40,15 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'username', 'email', 'name', 'password', 'password2', 'first_name', 'last_name', 'phone',
             'address', 'city', 'state', 'pincode'
         ]
+
+    def validate_email(self, value):
+        # Canonicalise and reject case-insensitive duplicates up front, so a
+        # clean 400 is returned instead of a DB IntegrityError, and so an
+        # account can't be shadowed by a case variant of an existing email.
+        value = value.strip().lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
 
     def validate(self, attrs):
         if attrs['password'] != attrs['password2']:

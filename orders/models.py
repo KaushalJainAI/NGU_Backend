@@ -20,7 +20,6 @@ class Order(models.Model):
     PAYMENT_METHOD_CHOICES = [
         ('COD', 'Cash on Delivery'),
         ('ONLINE', 'Online Payment'),
-        ('stripe', 'Stripe'),
         ('razorpay', 'Razorpay'),
     ]
 

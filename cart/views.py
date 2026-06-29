@@ -41,6 +41,8 @@ from .serializers import (
 from admin_panel.utils import generate_upi_qr_code
 from admin_panel.models import Coupon, ReceivableAccount
 from products.models import Product, ProductCombo, ProductVariant
+from spices_backend.limits import MAX_ITEM_QUANTITY, MAX_CART_ITEMS, MAX_SYNC_ITEMS
+from spices_backend.abuse import flag_suspicious
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,16 @@ def _resolve_variant(product, variant_id, *, lock=False):
 
 class CartViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
+
+    # Rate-limit cart mutations so rapid-fire abuse can't hammer the DB; reads
+    # are unaffected.
+    _WRITE_ACTIONS = {'add_item', 'update_item', 'remove_item', 'clear', 'sync'}
+
+    def get_throttles(self):
+        if getattr(self, 'action', None) in self._WRITE_ACTIONS:
+            from spices_backend.throttles import CartWriteThrottle
+            return [CartWriteThrottle()]
+        return super().get_throttles()
 
     # ------------------------------------------------------------------
     # Helper: build a serialized cart response (used by every endpoint)
@@ -117,6 +129,15 @@ class CartViewSet(viewsets.ViewSet):
                 'error': 'Quantity must be a valid integer'
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        # Upper bound: an extreme quantity can overflow the order money columns
+        # at checkout and is a classic abuse vector — reject and flag it.
+        if quantity > MAX_ITEM_QUANTITY:
+            flag_suspicious(request, reason='cart.add_item.quantity', value=quantity)
+            return Response({
+                'success': False,
+                'error': f'Quantity cannot exceed {MAX_ITEM_QUANTITY} per item.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         # Validate product_id is provided and is a valid integer
         if not product_id:
             return Response({'success': False, 'error': 'Product id required'},
@@ -154,6 +175,10 @@ class CartViewSet(viewsets.ViewSet):
                         if quantity > stock:
                             return Response({'success': False, 'error': f'Only {stock} units available'},
                                             status=status.HTTP_400_BAD_REQUEST)
+                        if cart.items.count() >= MAX_CART_ITEMS:
+                            return Response({'success': False,
+                                             'error': f'Your cart can hold at most {MAX_CART_ITEMS} different items.'},
+                                            status=status.HTTP_400_BAD_REQUEST)
                         CartItem.objects.create(cart=cart, combo=item, item_type='combo', quantity=quantity)
                 else:
                     item = Product.objects.select_for_update().get(id=product_id, is_active=True)
@@ -184,6 +209,10 @@ class CartViewSet(viewsets.ViewSet):
                     else:
                         if quantity > stock:
                             return Response({'success': False, 'error': f'Only {stock} units available'},
+                                            status=status.HTTP_400_BAD_REQUEST)
+                        if cart.items.count() >= MAX_CART_ITEMS:
+                            return Response({'success': False,
+                                             'error': f'Your cart can hold at most {MAX_CART_ITEMS} different items.'},
                                             status=status.HTTP_400_BAD_REQUEST)
                         CartItem.objects.create(cart=cart, product=item, variant=variant,
                                                 item_type='product', quantity=quantity)
@@ -228,6 +257,13 @@ class CartViewSet(viewsets.ViewSet):
             return Response({
                 'success': False,
                 'error': 'Quantity must be a valid integer'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if quantity > MAX_ITEM_QUANTITY:
+            flag_suspicious(request, reason='cart.update_item.quantity', value=quantity)
+            return Response({
+                'success': False,
+                'error': f'Quantity cannot exceed {MAX_ITEM_QUANTITY} per item.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         if not product_id:
@@ -382,6 +418,15 @@ class CartViewSet(viewsets.ViewSet):
                 'error': "'items' must be a list"
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        # Bound the payload size: a sync request can't carry an unbounded number
+        # of items (memory/time DoS vector).
+        if len(items_data) > MAX_SYNC_ITEMS:
+            flag_suspicious(request, reason='cart.sync.size', value=len(items_data))
+            return Response({
+                'success': False,
+                'error': f'Cannot sync more than {MAX_SYNC_ITEMS} items at once.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         # -----------------------------------------------------------
         # Phase 1: Validate all items and collect valid ones
         # -----------------------------------------------------------
@@ -402,6 +447,13 @@ class CartViewSet(viewsets.ViewSet):
                             'id': str(product_id or 'unknown'),
                             'type': item_type,
                             'reason': 'quantity must be a positive integer'
+                        })
+                        continue
+                    if quantity > MAX_ITEM_QUANTITY:
+                        skipped.append({
+                            'id': str(product_id or 'unknown'),
+                            'type': item_type,
+                            'reason': f'quantity exceeds the max of {MAX_ITEM_QUANTITY}'
                         })
                         continue
                 except (ValueError, TypeError):
@@ -525,24 +577,31 @@ class ValidateCouponAPIView(APIView):
         if serializer.is_valid():
             code = serializer.validated_data['code']
             try:
-                coupon = Coupon.objects.get(code=code)
-                if coupon.is_valid():
-                    return Response({
-                        'valid': True,
-                        'message': 'Coupon is valid.',
-                        'coupon_id': coupon.id,
-                        'discount_percent': coupon.discount_percent
-                    }, status=status.HTTP_200_OK)
-                else:
-                    return Response({
-                        'valid': False,
-                        'message': 'Coupon is expired or inactive.'
-                    }, status=status.HTTP_200_OK)
+                # Case-insensitive lookup so this matches checkout exactly — a
+                # code that works at checkout must not be reported "does not
+                # exist" here (and vice-versa).
+                coupon = Coupon.objects.get(code__iexact=code)
             except Coupon.DoesNotExist:
                 return Response({
                     'valid': False,
-                    'message': 'Coupon does not exist.'
+                    'message': f"'{code}' is not a valid coupon code."
                 }, status=status.HTTP_200_OK)
+
+            # Validate against the user's actual cart total so the minimum-order
+            # rule is honoured here too (instead of passing at validation and
+            # then failing at checkout).
+            cart = Cart.objects.filter(user=request.user).first()
+            order_amount = cart.total_price if cart else None
+            reason = coupon.get_invalid_reason(order_amount=order_amount)
+            if reason:
+                return Response({'valid': False, 'message': reason}, status=status.HTTP_200_OK)
+
+            return Response({
+                'valid': True,
+                'message': 'Coupon applied.',
+                'coupon_id': coupon.id,
+                'discount_percent': coupon.discount_percent
+            }, status=status.HTTP_200_OK)
 
         return Response({
             'valid': False,

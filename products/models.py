@@ -10,6 +10,28 @@ import io
 import os
 
 
+def _generate_unique_slug(model_cls, base_slug, *, fallback, current_pk=None):
+    """Return a slug unique within ``model_cls`` using bounded ``exists()`` queries.
+
+    Replaces the previous exception-driven retry loops that ran ``full_clean()`` /
+    ``save()`` inside a nested ``transaction.atomic()`` and caught
+    ValidationError/IntegrityError to bump the slug. That pattern could deadlock on
+    a constraint-validation savepoint when executed inside an outer transaction
+    (e.g. a request or test wrapped in ``atomic()``); computing the slug with plain
+    SELECTs before any write avoids the nested savepoint entirely.
+    """
+    base = base_slug or fallback
+    slug = base
+    counter = 1
+    qs = model_cls.objects.all()
+    if current_pk is not None:
+        qs = qs.exclude(pk=current_pk)
+    while qs.filter(slug=slug).exists():
+        slug = f"{base}-{counter}"
+        counter += 1
+    return slug
+
+
 class ProductSection(models.Model):
     """Model for organizing products into homepage sections"""
     SECTION_TYPE_CHOICES = [
@@ -111,24 +133,8 @@ class Category(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            base_slug = slugify(self.name)
-            if not base_slug:
-                base_slug = "category"
-            slug = base_slug
-            counter = 1
-            from django.core.exceptions import ValidationError
-            from django.db import transaction, IntegrityError
-            while True:
-                self.slug = slug
-                try:
-                    self.full_clean()
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    return
-                except (ValidationError, IntegrityError):
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
-                    
+            self.slug = _generate_unique_slug(
+                type(self), slugify(self.name), fallback="category", current_pk=self.pk)
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -175,13 +181,22 @@ class Product(models.Model):
         validators=[MinValueValidator(0)]
     )
     discount_price = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2, 
-        blank=True, 
+        max_digits=10,
+        decimal_places=2,
+        blank=True,
         null=True,
         validators=[MinValueValidator(0)]
     )
-    
+    # Tax rate (GST %) applied to this product at checkout. Defaults to 5% for
+    # all products; some goods are tax-exempt (e.g. papad / papad katran => 0).
+    tax_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='GST percentage charged on this product (e.g. 5 for 5%, 0 for exempt items like papad).'
+    )
+
     # Inventory
     stock = models.IntegerField(
         default=0,
@@ -271,36 +286,18 @@ class Product(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            # Generate base slug from name and weight (handle None weight)
             weight_part = f"-{self.weight}" if self.weight else ""
-            base_slug = slugify(f"{self.name}{weight_part}")
-            
-            # Fallback if slugify results in empty string
-            if not base_slug:
-                base_slug = "product"
-                
-            slug = base_slug
-            counter = 1
-            from django.core.exceptions import ValidationError
-            from django.db import transaction, IntegrityError
-            while True:
-                self.slug = slug
-                try:
-                    self.full_clean()
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    return
-                except (ValidationError, IntegrityError):
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
-        
+            self.slug = _generate_unique_slug(
+                type(self), slugify(f"{self.name}{weight_part}"),
+                fallback="product", current_pk=self.pk)
+
         # Run validation
         self.full_clean()
-        
+
         # Generate thumbnail if image exists
         if self.image:
             self.generate_thumbnail()
-            
+
         super().save(*args, **kwargs)
 
     def generate_thumbnail(self):
@@ -441,19 +438,9 @@ class ProductVariant(models.Model):
     def save(self, *args, **kwargs):
         if not self.slug:
             weight_part = f"-{self.formatted_weight}" if self.weight else ""
-            base_slug = slugify(f"{self.product.name}{weight_part}") or "variant"
-            slug = base_slug
-            counter = 1
-            from django.db import transaction, IntegrityError
-            while True:
-                self.slug = slug
-                try:
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    return
-                except IntegrityError:
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
+            self.slug = _generate_unique_slug(
+                type(self), slugify(f"{self.product.name}{weight_part}"),
+                fallback="variant", current_pk=self.pk)
         super().save(*args, **kwargs)
 
     @property
@@ -559,8 +546,16 @@ class ProductCombo(models.Model):
         null=True,
         validators=[MinValueValidator(0)]
     )
+    # Tax rate (GST %) applied to this combo at checkout. Defaults to 5%.
+    tax_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='GST percentage charged on this combo (e.g. 5 for 5%, 0 for exempt).'
+    )
     image = models.ImageField(
-        upload_to='combos/', 
+        upload_to='combos/',
         blank=True, 
         null=True,
         validators=[validate_file_size, validate_image_extension]
@@ -621,31 +616,16 @@ class ProductCombo(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            base_slug = slugify(self.name)
-            if not base_slug:
-                base_slug = "combo"
-            slug = base_slug
-            counter = 1
-            from django.core.exceptions import ValidationError
-            from django.db import transaction, IntegrityError
-            while True:
-                self.slug = slug
-                try:
-                    self.full_clean()
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    return
-                except (ValidationError, IntegrityError):
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
-        
+            self.slug = _generate_unique_slug(
+                type(self), slugify(self.name), fallback="combo", current_pk=self.pk)
+
         # Run validation
         self.full_clean()
-        
+
         # Generate thumbnail if image exists
         if self.image:
             self.generate_thumbnail()
-            
+
         super().save(*args, **kwargs)
 
     def generate_thumbnail(self):

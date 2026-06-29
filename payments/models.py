@@ -14,7 +14,6 @@ class Payment(models.Model):
     ]
 
     PAYMENT_GATEWAY_CHOICES = [
-        ('stripe', 'Stripe'),
         ('razorpay', 'Razorpay'),
         ('cod', 'Cash on Delivery'),
     ]

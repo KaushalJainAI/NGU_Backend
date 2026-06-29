@@ -376,7 +376,7 @@ class ProductListSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             'id', 'name', 'slug', 'category', 'category_name', 'spice_form',
-            'price', 'discount_price', 'final_price', 'discount_percentage',
+            'price', 'discount_price', 'final_price', 'discount_percentage', 'tax_rate',
             'stock', 'in_stock', 'weight', 'unit', 'organic', 'image', 'thumbnail', 'is_featured',
             'average_rating', 'reviews_count', 'created_at', 'badge', 'is_active',
             'sections', 'section_names', 'variants', 'variant_count'
@@ -433,7 +433,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'slug', 'category', 'category_name', 'description',
             'spice_form', 'price', 'discount_price', 'final_price',
-            'discount_percentage', 'stock', 'in_stock', 'weight', 'unit',
+            'discount_percentage', 'tax_rate', 'stock', 'in_stock', 'weight', 'unit',
             'origin_country', 'organic', 'shelf_life', 'ingredients',
             'image', 'thumbnail', 'images', 'is_featured', 'average_rating',
             'reviews_count', 'created_at', 'is_active', 'sections', 'section_names',
@@ -520,7 +520,7 @@ class ProductComboSerializer(serializers.ModelSerializer):
         model = ProductCombo
         fields = [
             'id', 'name', 'slug', 'description', 'title', 'subtitle',
-            'display_title', 'price', 'discount_price', 'final_price',
+            'display_title', 'price', 'discount_price', 'final_price', 'tax_rate',
             'discount_percentage', 'total_original_price', 'total_weight',
             'weight', 'unit', 'image', 'thumbnail', 'is_active', 'is_featured', 'badge', 'created_at', 
             'items', 'sections', 'section_names'

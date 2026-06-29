@@ -29,6 +29,7 @@ class CartItemResponseSerializer(serializers.Serializer):
     variant_id = serializers.SerializerMethodField()
     variant_slug = serializers.SerializerMethodField()
     weight = serializers.SerializerMethodField()
+    tax_rate = serializers.SerializerMethodField()
 
     def _get_item(self, obj):
         """Return the underlying Product or ProductCombo instance."""
@@ -56,6 +57,11 @@ class CartItemResponseSerializer(serializers.Serializer):
                 w = int(w)
             return f"{w}{item.unit}"
         return None
+
+    def get_tax_rate(self, obj):
+        """GST rate (%) for this line, from its product/combo (default 5)."""
+        item = self._get_item(obj)
+        return float(getattr(item, 'tax_rate', 5) or 0) if item else 0.0
 
     def get_id(self, obj):
         item = self._get_item(obj)
@@ -159,7 +165,14 @@ class CartResponseSerializer(serializers.Serializer):
     def get_summary(self, obj):
         cart = obj['cart']
         subtotal = float(cart.total_price)
-        tax = round(subtotal * 0.05, 2)
+        # Per-product GST: sum each line's subtotal * its tax_rate. Papad lines
+        # (tax_rate=0) contribute nothing; everything else defaults to 5%.
+        tax = 0.0
+        for ci in cart.items.select_related('product', 'combo', 'variant').all():
+            source = ci.combo if (ci.item_type == 'combo') else ci.product
+            rate = float(getattr(source, 'tax_rate', 5) or 0)
+            tax += float(ci.subtotal) * rate / 100
+        tax = round(tax, 2)
         discount = 0
         shipping = 0 if subtotal >= 500 or subtotal == 0 else 50
         total = round(subtotal + tax + shipping - discount, 2)

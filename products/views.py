@@ -10,6 +10,9 @@ from django.core.cache import cache
 from django.conf import settings
 from django.utils.translation import get_language
 
+from spices_backend.limits import (
+    MAX_SEARCH_Q, SEARCH_TOP_K_MAX, SEARCH_THRESHOLD_MIN, SEARCH_THRESHOLD_MAX, clamp,
+)
 from .models import Category, Product, ProductCombo, ProductImage, ProductSection, ProductVariant
 from .serializers import (
     CategorySerializer,
@@ -411,6 +414,11 @@ def unified_search(request):
     """SINGLE ENDPOINT: Search + All Recommendations (Products + Combos ranked)"""
     query = request.GET.get('q', '').strip()
 
+    # Bound the query length so a giant string can't drive a slow/expensive search.
+    if len(query) > MAX_SEARCH_Q:
+        return Response({'success': False, 'error': f'Query too long (max {MAX_SEARCH_Q} characters).'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
     try:
         top_k = int(request.GET.get('top_k', 20))
     except (ValueError, TypeError):
@@ -426,7 +434,11 @@ def unified_search(request):
     if not query:
         return Response({'success': False, 'error': 'Query "q" required'},
                         status=status.HTTP_400_BAD_REQUEST)
-    
+
+    # Clamp into safe ranges (negative / huge values would waste CPU/memory).
+    top_k = clamp(top_k, 1, SEARCH_TOP_K_MAX)
+    threshold = clamp(threshold, SEARCH_THRESHOLD_MIN, SEARCH_THRESHOLD_MAX)
+
     results = search_engine.unified_search(query, top_k, threshold)
     return Response(results)
 

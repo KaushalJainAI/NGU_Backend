@@ -108,8 +108,8 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 key='access_token',
                 value=access_token,
                 httponly=True,
-                secure=not settings.DEBUG,
-                samesite='Lax',
+                secure=settings.AUTH_COOKIE_SECURE,
+                samesite=settings.AUTH_COOKIE_SAMESITE,
                 max_age=3600 # 1 hour
             )
             # Set refresh token in secure HttpOnly cookie
@@ -117,8 +117,8 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 key='refresh_token',
                 value=refresh_token,
                 httponly=True,
-                secure=not settings.DEBUG,
-                samesite='Lax',
+                secure=settings.AUTH_COOKIE_SECURE,
+                samesite=settings.AUTH_COOKIE_SAMESITE,
                 max_age=3600 * 24 * 7 # 7 days
             )
         return response
@@ -141,8 +141,8 @@ class CustomTokenRefreshView(TokenRefreshView):
                 key='access_token',
                 value=access_token,
                 httponly=True,
-                secure=not settings.DEBUG,
-                samesite='Lax',
+                secure=settings.AUTH_COOKIE_SECURE,
+                samesite=settings.AUTH_COOKIE_SAMESITE,
                 max_age=3600
             )
             # If rotation is on, we'll get a new refresh token
@@ -152,8 +152,8 @@ class CustomTokenRefreshView(TokenRefreshView):
                     key='refresh_token',
                     value=refresh_token,
                     httponly=True,
-                    secure=not settings.DEBUG,
-                    samesite='Lax',
+                    secure=settings.AUTH_COOKIE_SECURE,
+                    samesite=settings.AUTH_COOKIE_SAMESITE,
                     max_age=3600 * 24 * 7
                 )
         return response
@@ -381,13 +381,19 @@ class GoogleLogin(APIView):
             if not email:
                 return Response({'detail': 'Email not provided by Google'}, status=status.HTTP_400_BAD_REQUEST)
                 
-            # 3. Get or create user
-            user, created = User.objects.get_or_create(email=email, defaults={
-                'username': email.split('@')[0],
-                'name': name,
-                'first_name': first_name,
-                'last_name': last_name,
-            })
+            # 3. Get or create user (match email case-insensitively so a Google
+            # sign-in never forks a second account from a case variant).
+            email = email.strip().lower()
+            user = User.objects.filter(email__iexact=email).first()
+            created = user is None
+            if created:
+                user = User.objects.create(
+                    email=email,
+                    username=email.split('@')[0],
+                    name=name,
+                    first_name=first_name,
+                    last_name=last_name,
+                )
             
             if created:
                 user.set_unusable_password()
@@ -412,16 +418,16 @@ class GoogleLogin(APIView):
                 key='access_token',
                 value=str(access),
                 httponly=True,
-                secure=not settings.DEBUG,
-                samesite='Lax',
+                secure=settings.AUTH_COOKIE_SECURE,
+                samesite=settings.AUTH_COOKIE_SAMESITE,
                 max_age=3600
             )
             response.set_cookie(
                 key='refresh_token',
                 value=str(refresh),
                 httponly=True,
-                secure=not settings.DEBUG,
-                samesite='Lax',
+                secure=settings.AUTH_COOKIE_SECURE,
+                samesite=settings.AUTH_COOKIE_SAMESITE,
                 max_age=3600 * 24 * 7
             )
             

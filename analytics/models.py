@@ -20,6 +20,12 @@ class UserEvent(models.Model):
         ('favorite', 'Favorite'),
         ('search', 'Search'),
         ('purchase', 'Purchase'),
+        # Funnel / page-level events (logged-in only; anonymous traffic is
+        # tracked separately via DailyAnonStat counters — see analytics/anon.py).
+        ('page_view', 'Page View'),
+        ('checkout_started', 'Checkout Started'),
+        ('checkout_completed', 'Checkout Completed'),
+        ('checkout_abandoned', 'Checkout Abandoned'),
     ]
 
     user = models.ForeignKey(
@@ -114,3 +120,113 @@ class UserGeo(models.Model):
     def __str__(self):
         loc = ', '.join(filter(None, [self.city, self.state])) or 'unknown'
         return f"{self.user_id}: {loc}"
+
+
+# ---------------------------------------------------------------------------
+# Rollup tables
+#
+# These are *read-time* aggregates for the admin Insights dashboard. They are
+# never written by request/response views — only by the ``rollup_analytics``
+# management command, which recomputes a day's rows idempotently from the
+# source signals (orders + UserEvent + the anonymous Redis counters). Keeping
+# them pre-aggregated means the dashboard reads stay fast and constant-time
+# regardless of how large the raw event/order tables grow, and the raw events
+# remain prunable. See ANALYTICS.md.
+# ---------------------------------------------------------------------------
+
+
+class DailySalesRollup(models.Model):
+    """One row per day of sales KPIs, sourced from the orders app."""
+
+    date = models.DateField(unique=True, db_index=True)
+    orders = models.PositiveIntegerField(default=0)
+    units = models.PositiveIntegerField(default=0)
+    revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    aov = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    coupon_orders = models.PositiveIntegerField(default=0)
+    coupon_discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    new_customers = models.PositiveIntegerField(default=0)
+    returning_customers = models.PositiveIntegerField(default=0)
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-date']
+        verbose_name = 'Daily Sales Rollup'
+
+    def __str__(self):
+        return f"{self.date}: {self.orders} orders / ₹{self.revenue}"
+
+
+class DailyFunnelRollup(models.Model):
+    """Logged-in funnel: count of each UserEvent type per day."""
+
+    date = models.DateField(db_index=True)
+    event_type = models.CharField(max_length=20)
+    count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-date']
+        unique_together = ('date', 'event_type')
+        indexes = [models.Index(fields=['date'])]
+
+    def __str__(self):
+        return f"{self.date} {self.event_type}: {self.count}"
+
+
+class SearchTermStat(models.Model):
+    """Per-day search term frequency, flagging zero-result queries."""
+
+    date = models.DateField(db_index=True)
+    term = models.CharField(max_length=255)
+    count = models.PositiveIntegerField(default=0)
+    zero_result = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-date', '-count']
+        unique_together = ('date', 'term')
+        indexes = [models.Index(fields=['date', '-count'])]
+
+    def __str__(self):
+        flag = ' (0 results)' if self.zero_result else ''
+        return f"{self.date} '{self.term}' x{self.count}{flag}"
+
+
+class DailyAnonStat(models.Model):
+    """
+    Pre-aggregated counters for anonymous (logged-out) traffic.
+
+    Storage is bounded by ``days × metric × dimension-cardinality`` — it does
+    NOT grow with visitor count. A million anonymous visits add zero rows; they
+    only bump existing counters. Counters are incremented in Redis on the hot
+    path and flushed here periodically (see analytics/anon.py). When Redis is
+    unavailable (tests/dev) increments are written here directly.
+
+    ``dimension_key`` is empty for the day/metric total, otherwise a coarse,
+    non-identifying bucket like ``device:mobile``, ``state:Maharashtra``,
+    ``city:Pune`` or ``source:google``.
+    """
+
+    METRIC_CHOICES = [
+        ('page_view', 'Page View'),
+        ('product_view', 'Product View'),
+        ('add_to_cart', 'Add To Cart'),
+        ('search', 'Search'),
+        ('search_zero_result', 'Search (Zero Result)'),
+        ('checkout_started', 'Checkout Started'),
+        ('checkout_completed', 'Checkout Completed'),
+    ]
+
+    date = models.DateField(db_index=True)
+    metric = models.CharField(max_length=32, choices=METRIC_CHOICES)
+    dimension_key = models.CharField(max_length=64, blank=True, default='')
+    count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['-date']
+        unique_together = ('date', 'metric', 'dimension_key')
+        indexes = [models.Index(fields=['date', 'metric'])]
+        verbose_name = 'Daily Anonymous Stat'
+
+    def __str__(self):
+        dim = self.dimension_key or 'total'
+        return f"{self.date} {self.metric}[{dim}]: {self.count}"

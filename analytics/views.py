@@ -4,11 +4,12 @@ import requests
 from django.conf import settings
 from django.core.cache import cache
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import UserRateThrottle
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
 
 from products.cache import make_cache_key
+from .anon import record_anon
 from .models import UserEvent, UserGeo
 from .serializers import UserEventSerializer, UserGeoSerializer
 
@@ -30,6 +31,11 @@ class EventIngestThrottle(UserRateThrottle):
 
 class GeocodeThrottle(UserRateThrottle):
     scope = 'geocode'
+
+
+class AnonEventThrottle(AnonRateThrottle):
+    """Per-IP throttle for the public anonymous-event endpoint (abuse guard)."""
+    scope = 'anon_events'
 
 
 @api_view(['POST'])
@@ -60,6 +66,28 @@ def ingest_events(request):
         UserEvent.objects.bulk_create(events)
 
     return Response({'recorded': len(events), 'skipped': skipped}, status=201)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@throttle_classes([AnonEventThrottle])
+def ingest_anon(request):
+    """
+    Record one anonymous (logged-out) behavioral event as aggregate counters.
+
+    Public + identity-free by design: no row is stored and no session is kept,
+    so a repeat visitor cannot be recognised. The body carries only a coarse
+    ``metric`` (+ optional ``query``/``zero`` for searches). Always returns 204
+    so analytics can never disrupt a guest's browsing, even on bad input.
+    """
+    record_anon(
+        request.data.get('metric'),
+        request,
+        product_id=request.data.get('product_id'),
+        query=request.data.get('query'),
+        zero=bool(request.data.get('zero')),
+    )
+    return Response(status=204)
 
 
 def _parse_latlng(request):

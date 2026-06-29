@@ -16,17 +16,29 @@ def validate_file_size(value):
 def validate_image_extension(value):
     """
     Validator for image extensions.
+
+    Only NEW uploads are checked. An already-stored file may have no extension
+    in its name (e.g. a Cloudinary public_id like ``ngu/products/turmeric_x``);
+    these validators run again on every ``full_clean()``/save, so re-validating a
+    stored, extension-less name would wrongly reject unrelated updates. Uploads
+    always carry a filename with an extension, so "no extension" means
+    "already persisted" -> nothing to validate.
     """
-    ext = os.path.splitext(value.name)[1]
+    ext = os.path.splitext(getattr(value, 'name', '') or '')[1]
+    if not ext:
+        return
     valid_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg']
     if not ext.lower() in valid_extensions:
         raise ValidationError(_('Unsupported file extension. Supported extensions are: ') + ", ".join(valid_extensions))
 
 def validate_video_extension(value):
     """
-    Validator for video extensions.
+    Validator for video extensions. See ``validate_image_extension`` for why an
+    extension-less (already-stored) name is treated as nothing-to-validate.
     """
-    ext = os.path.splitext(value.name)[1]
+    ext = os.path.splitext(getattr(value, 'name', '') or '')[1]
+    if not ext:
+        return
     valid_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm']
     if not ext.lower() in valid_extensions:
         raise ValidationError(_('Unsupported video extension. Supported extensions are: ') + ", ".join(valid_extensions))

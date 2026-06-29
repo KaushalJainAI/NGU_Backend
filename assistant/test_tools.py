@@ -9,6 +9,7 @@ Focus areas:
 import pytest
 from decimal import Decimal
 
+from conftest import create_test_image
 from assistant import tools as toolkit
 
 
@@ -30,6 +31,7 @@ def discounted_product(db, test_category):
         unit='g',
         spice_form='powder',
         is_active=True,
+        image=create_test_image('discounted.jpg'),
     )
 
 
@@ -60,6 +62,7 @@ class TestBrowseProducts:
             name='Hidden Spice', category=test_category, description='x',
             price=Decimal('50'), stock=5, weight=Decimal('100'), unit='g',
             spice_form='powder', is_active=False,
+            image=create_test_image('hidden.jpg'),
         )
         out = toolkit.tool_browse_products(None, {})
         assert 'Hidden Spice' not in {r['name'] for r in out['results']}

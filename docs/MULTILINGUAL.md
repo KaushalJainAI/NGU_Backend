@@ -92,6 +92,11 @@ for each request. It reads, in order:
 Unknown or missing values leave the Django default (`en`) active. The middleware deactivates
 the language after the response so it never leaks between requests.
 
+The middleware also adds `Vary: X-Language` to every response so the browser (and any
+CDN/reverse-proxy) stores a separate cache entry per language. Without this header the
+HTTP cache ignores the `X-Language` request header and returns a stale-language response
+for previously-visited URLs.
+
 The **frontend** sends the active `site_lang` value as an `X-Language` header with every
 authenticated API request (set in `lib/api/config.ts → getLangHeader()`). Public fetch
 calls also include it. This means API responses (product names, descriptions, category
@@ -147,6 +152,11 @@ Human-reviewed translations for the original catalog are stored in:
 ```
 Backend/products/fixtures/curated_translations.json
 ```
+
+This fixture covers **products, categories, combos and reviews** — each keyed by
+primary key, with full (not summarised) translations of names, titles,
+descriptions and ingredients. The loader's `MODEL_MAP` maps the `products`,
+`categories`, `combos` and `reviews` sections to their models.
 
 Apply them with:
 
@@ -247,3 +257,4 @@ assistant prompt instructs the LLM to respond in the detected language.
 | Forgetting to add the language code to the frontend `SUPPORTED_LANGUAGES` | Language picker doesn't show it; `X-Language` never sent for it | Add to `src/i18n/index.ts` |
 | Running `translate_content` without `LLM_API_KEY` set | Command exits with error | Set `LLM_API_KEY` in env, or use `--dry-run` to verify config first |
 | Editing `curated_translations.json` and not reloading | Fixture and DB are out of sync | Run `load_curated_translations` |
+| Removing `patch_vary_headers` from `LanguageQueryMiddleware` | Browser/CDN caches one language and returns it for all subsequent requests to the same URL — products appear "stuck" in English | Keep `Vary: X-Language` in the middleware |
