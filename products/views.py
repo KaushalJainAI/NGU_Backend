@@ -168,9 +168,10 @@ class ProductViewSet(viewsets.ModelViewSet):
         if request.user and request.user.is_staff:
             return super().list(request, *args, **kwargs)
         
-        # Build cache key from query params
+        # Build cache key from query params — include language so Hindi/Gujarati/etc.
+        # requests don't get served the cached English product names.
         query_params = dict(request.query_params)
-        cache_key = make_cache_key(CACHE_PREFIX_PRODUCTS, 'list', **query_params)
+        cache_key = make_cache_key(CACHE_PREFIX_PRODUCTS, 'list', lang=get_language(), **query_params)
         
         cached = cache.get(cache_key)
         if cached is not None:
@@ -296,9 +297,10 @@ class ComboProductViewSet(viewsets.ModelViewSet):
         if request.user and request.user.is_staff:
             return super().list(request, *args, **kwargs)
         
-        # Build cache key from query params
+        # Build cache key from query params — include language so combos return
+        # translated names per language.
         query_params = dict(request.query_params)
-        cache_key = make_cache_key(CACHE_PREFIX_COMBOS, 'list', **query_params)
+        cache_key = make_cache_key(CACHE_PREFIX_COMBOS, 'list', lang=get_language(), **query_params)
         
         cached = cache.get(cache_key)
         if cached is not None:
@@ -470,7 +472,7 @@ def search_suggest(request):
         return Response({'query': query, 'suggestions': []})
 
     from .recommendations import build_suggestions
-    cache_key = make_cache_key(CACHE_PREFIX_SEARCH, 'suggest', query, limit)
+    cache_key = make_cache_key(CACHE_PREFIX_SEARCH, 'suggest', get_language(), query, limit)
     payload = get_cached_or_set(cache_key, lambda: build_suggestions(query, limit), TTL_MEDIUM)
     return Response(payload)
 
