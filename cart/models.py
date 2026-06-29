@@ -3,7 +3,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db.models import Sum, F, Case, When, DecimalField, Value, IntegerField
 from django.db.models.functions import Coalesce
-from products.models import Product, ProductCombo
+from products.models import Product, ProductCombo, ProductVariant
 
 
 class Cart(models.Model):
@@ -22,9 +22,15 @@ class Cart(models.Model):
 
     @property
     def total_price(self):
-        """Calculate total price of all items in cart - OPTIMIZED with DB aggregation"""
+        """Calculate total price of all items in cart - OPTIMIZED with DB aggregation.
+        Product lines price off their selected variant when one is set, falling
+        back to the legacy Product price for any variant-less rows."""
         result = self.items.annotate(
             item_price=Case(
+                When(
+                    item_type='product', variant__isnull=False,
+                    then=Coalesce(F('variant__discount_price'), F('variant__price'))
+                ),
                 When(
                     item_type='product',
                     then=Coalesce(F('product__discount_price'), F('product__price'))
@@ -50,14 +56,17 @@ class Cart(models.Model):
     def get_items_with_details(self):
         """Get cart items with related product/combo data in a single query - OPTIMIZED"""
         return self.items.select_related(
-            'product', 
+            'product',
             'product__category',
-            'combo'
+            'combo',
+            'variant',
         ).only(
             'id', 'item_type', 'quantity', 'created_at',
             'product__id', 'product__name', 'product__slug', 'product__image',
-            'product__price', 'product__discount_price', 'product__weight', 
+            'product__price', 'product__discount_price', 'product__weight',
             'product__stock', 'product__category__name',
+            'variant__id', 'variant__slug', 'variant__weight', 'variant__unit',
+            'variant__price', 'variant__discount_price', 'variant__stock',
             'combo__id', 'combo__name', 'combo__slug', 'combo__image',
             'combo__price', 'combo__discount_price'
         )
@@ -76,15 +85,26 @@ class CartItem(models.Model):
         related_name='items'
     )
     product = models.ForeignKey(
-        Product, 
-        on_delete=models.CASCADE, 
-        null=True, 
+        Product,
+        on_delete=models.CASCADE,
+        null=True,
         blank=True
     )
+    # The specific packaging/size chosen for a product line. Kept nullable for
+    # combo rows and for backward compatibility; for product rows it is the unit
+    # of sale and is always populated by the cart views (defaulting to the
+    # product's default variant when the client doesn't specify one).
+    variant = models.ForeignKey(
+        ProductVariant,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='cart_items',
+    )
     combo = models.ForeignKey(
-        ProductCombo, 
-        on_delete=models.CASCADE, 
-        null=True, 
+        ProductCombo,
+        on_delete=models.CASCADE,
+        null=True,
         blank=True
     )
     item_type = models.CharField(
@@ -100,11 +120,12 @@ class CartItem(models.Model):
         ordering = ['-created_at']
         # Improved constraints to prevent any duplicate cart items
         constraints = [
-            # Ensure only one product per cart (when item_type is 'product')
+            # Ensure only one line per (cart, variant) for product items, so the
+            # same spice in different sizes can coexist as separate cart lines.
             models.UniqueConstraint(
-                fields=['cart', 'product'],
-                condition=models.Q(item_type='product', product__isnull=False),
-                name='unique_cart_product'
+                fields=['cart', 'variant'],
+                condition=models.Q(item_type='product', variant__isnull=False),
+                name='unique_cart_variant'
             ),
             # Ensure only one combo per cart (when item_type is 'combo')
             models.UniqueConstraint(
@@ -130,6 +151,7 @@ class CartItem(models.Model):
         indexes = [
             models.Index(fields=['cart', 'item_type']),
             models.Index(fields=['cart', 'product']),
+            models.Index(fields=['cart', 'variant']),
             models.Index(fields=['cart', 'combo']),
         ]
 
@@ -138,10 +160,34 @@ class CartItem(models.Model):
         return f"{item.name if item else 'Unknown'} x {self.quantity}"
 
     @property
+    def unit_price(self):
+        """Price per unit for this line, preferring the selected variant."""
+        if self.item_type == 'product':
+            if self.variant:
+                return self.variant.final_price
+            if self.product:
+                return self.product.final_price
+        elif self.item_type == 'combo' and self.combo:
+            return self.combo.final_price if hasattr(self.combo, 'final_price') else self.combo.price
+        return 0
+
+    @property
+    def available_stock(self):
+        """Stock available for this line (variant stock when set)."""
+        if self.item_type == 'product':
+            if self.variant:
+                return self.variant.stock
+            if self.product:
+                return self.product.stock
+        elif self.item_type == 'combo' and self.combo:
+            return getattr(self.combo, 'stock', 999)
+        return 0
+
+    @property
     def subtotal(self):
         """Calculate subtotal for this cart item"""
-        if self.item_type == 'product' and self.product:
-            return self.product.final_price * self.quantity
+        if self.item_type == 'product' and (self.variant or self.product):
+            return self.unit_price * self.quantity
         elif self.item_type == 'combo' and self.combo:
             price = self.combo.final_price if hasattr(self.combo, 'final_price') else self.combo.price
             return price * self.quantity
@@ -168,10 +214,12 @@ class CartItem(models.Model):
         if self.quantity and self.quantity < 1:
             errors['quantity'] = 'Quantity must be at least 1'
         
-        # Check stock availability
-        if self.item_type == 'product' and self.product:
-            if self.quantity > self.product.stock:
-                errors['quantity'] = f'Only {self.product.stock} units available for {self.product.name}'
+        # Check stock availability (variant stock when a variant is selected)
+        if self.item_type == 'product' and (self.variant or self.product):
+            avail = self.available_stock
+            if self.quantity > avail:
+                name = self.product.name if self.product else (self.variant.product.name if self.variant else 'item')
+                errors['quantity'] = f'Only {avail} units available for {name}'
         
         elif self.item_type == 'combo' and self.combo:
             combo_stock = getattr(self.combo, 'stock', 999)

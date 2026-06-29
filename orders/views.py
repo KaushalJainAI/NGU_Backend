@@ -38,6 +38,8 @@ from .models import Order, OrderItem
 from .serializers import OrderListSerializer, OrderDetailSerializer, OrderCreateSerializer
 from cart.models import Cart
 from admin_panel.models import Coupon
+from spices_backend.limits import MAX_ITEM_QUANTITY, MAX_ORDER_TOTAL
+from spices_backend.abuse import flag_suspicious
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +47,21 @@ logger = logging.getLogger(__name__)
 class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
+    def get_throttles(self):
+        # Rate-limit order placement (per-minute + daily); other actions are
+        # governed by the default user throttle.
+        if getattr(self, 'action', None) == 'create':
+            from spices_backend.throttles import OrderRateThrottle, OrderDailyThrottle
+            return [OrderRateThrottle(), OrderDailyThrottle()]
+        return super().get_throttles()
+
     def get_queryset(self):
         user = self.request.user
         # Admin/superusers can see all orders
         if user.is_staff or user.is_superuser:
-            return Order.objects.all().prefetch_related('items__product', 'items__combo').select_related('user')
+            return Order.objects.all().prefetch_related('items__product', 'items__combo', 'items__variant').select_related('user')
         # Regular users only see their own orders
-        return Order.objects.filter(user=user).prefetch_related('items__product', 'items__combo')
+        return Order.objects.filter(user=user).prefetch_related('items__product', 'items__combo', 'items__variant')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -68,12 +78,51 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             coupon = Coupon.objects.get(code__iexact=coupon_code)
         except Coupon.DoesNotExist:
-            return None, {'error': 'Invalid coupon code'}
+            return None, {'error': f"'{coupon_code}' is not a valid coupon code."}
 
-        if not coupon.is_valid(order_amount=order_amount):
-            return None, {'error': 'This coupon is invalid, expired, or you do not meet the requirements'}
+        reason = coupon.get_invalid_reason(order_amount=order_amount)
+        if reason:
+            return None, {'error': reason}
 
         return coupon, None
+
+    def _cart_line_tax_rate(self, cart_item):
+        """GST rate (%) for a cart line, taken from its product or combo."""
+        if cart_item.item_type == 'combo' and cart_item.combo:
+            source = cart_item.combo
+        else:
+            source = cart_item.product
+        return Decimal(str(getattr(source, 'tax_rate', 5) or 0))
+
+    def _cart_line_price(self, cart_item):
+        """Unit final price for a cart line (variant-aware)."""
+        if cart_item.item_type == 'product' and cart_item.variant:
+            return Decimal(str(cart_item.variant.final_price))
+        item = cart_item.combo if cart_item.item_type == 'combo' else cart_item.product
+        if item is None:
+            return Decimal('0')
+        price = getattr(item, 'final_price', None)
+        return Decimal(str(price if price is not None else getattr(item, 'price', 0)))
+
+    def _compute_cart_tax(self, cart, subtotal, total_discount):
+        """Sum of per-line GST after distributing the order discount proportionally.
+
+        Mirrors the per-line math used when an order is actually created, so the
+        coupon preview and the placed order show the same tax figure.
+        """
+        tax = Decimal('0')
+        for cart_item in cart.items.select_related('product', 'combo', 'variant').all():
+            unit_price = self._cart_line_price(cart_item)
+            quantity = cart_item.quantity
+            line_total = unit_price * quantity
+            if total_discount > 0 and subtotal > 0:
+                line_discount = ((line_total / subtotal) * total_discount).quantize(Decimal('0.01'))
+            else:
+                line_discount = Decimal('0')
+            discounted_total = (line_total - line_discount).quantize(Decimal('0.01'))
+            rate = self._cart_line_tax_rate(cart_item)
+            tax += (discounted_total * rate / Decimal('100')).quantize(Decimal('0.01'))
+        return tax
 
     def _calculate_discount(self, price, coupon):
         """
@@ -116,10 +165,10 @@ class OrderViewSet(viewsets.ModelViewSet):
         # Calculate discount using discount_percent
         total_discount = self._calculate_discount(subtotal, coupon)
 
-        # Calculate order breakdown
+        # Calculate order breakdown (per-product GST, summed across lines)
         discounted_subtotal = subtotal - total_discount
         shipping_charge = Decimal('0') if discounted_subtotal >= 500 else Decimal('50')
-        tax = (discounted_subtotal * Decimal('0.05')).quantize(Decimal('0.01'))
+        tax = self._compute_cart_tax(cart, subtotal, total_discount)
         total_amount = discounted_subtotal + shipping_charge + tax
 
         return Response({
@@ -140,6 +189,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         Create order with optional coupon validation and clear cart
         CART DELETION IS DONE AFTER TRANSACTION TO PREVENT ROLLBACK
         """
+        from products.models import ProductComboItem
+
         serializer = OrderCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
@@ -167,19 +218,38 @@ class OrderViewSet(viewsets.ModelViewSet):
         cart_items_data = []
         subtotal = Decimal('0')
         
-        for cart_item in cart.items.select_related('product', 'combo').all():
+        for cart_item in cart.items.select_related('product', 'combo', 'variant').all():
             # Handle both products and combos
+            components = []  # (product_id, total_units) the line consumes from inventory
             if cart_item.item_type == 'product' and cart_item.product:
                 item = cart_item.product
                 item_name = cart_item.product.name
-                item_weight = cart_item.product.formatted_weight
-                
-                item_stock = cart_item.product.stock
-                item_price = cart_item.product.final_price if hasattr(cart_item.product, 'final_price') else cart_item.product.price
+                variant = cart_item.variant
+
+                # G1: never sell a delisted/inactive product, even if it is still
+                # sitting in a cart from before it was hidden.
+                if not item.is_active:
+                    return Response({'error': f'{item_name} is no longer available'},
+                                    status=status.HTTP_400_BAD_REQUEST)
+
+                if variant:
+                    item_weight = variant.formatted_weight
+                    item_stock = variant.stock
+                    item_price = variant.final_price
+                else:
+                    item_weight = cart_item.product.formatted_weight
+                    item_stock = cart_item.product.stock
+                    item_price = cart_item.product.final_price if hasattr(cart_item.product, 'final_price') else cart_item.product.price
                 product_ref = cart_item.product
             elif cart_item.item_type == 'combo' and cart_item.combo:
                 item = cart_item.combo
                 item_name = cart_item.combo.name
+
+                # G1: a delisted combo cannot be ordered either.
+                if not item.is_active:
+                    return Response({'error': f'{item_name} is no longer available'},
+                                    status=status.HTTP_400_BAD_REQUEST)
+
                 # Use combo's own weight if available
                 if cart_item.combo.weight and cart_item.combo.unit:
                     w = float(cart_item.combo.weight)
@@ -188,29 +258,54 @@ class OrderViewSet(viewsets.ModelViewSet):
                     item_weight = f"{w}{cart_item.combo.unit}"
                 else:
                     item_weight = "Combo"
-                
-                item_stock = getattr(cart_item.combo, 'stock', 999)  # Combos may not have stock limit
+
+                # G2: a combo's availability is governed by its COMPONENT stock,
+                # and ordering it must consume that component inventory. Validate
+                # every component up front and remember how many units to draw.
+                for ci in ProductComboItem.objects.filter(combo=item).select_related('product'):
+                    required = ci.quantity * cart_item.quantity
+                    if ci.product.stock < required:
+                        return Response({
+                            'error': f'Insufficient stock for {ci.product.name} (in {item_name}). '
+                                     f'Available: {ci.product.stock}'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    components.append((ci.product_id, required))
+
+                item_stock = cart_item.quantity  # component checks above are authoritative
                 item_price = cart_item.combo.final_price if hasattr(cart_item.combo, 'final_price') else cart_item.combo.price
                 product_ref = None  # Combos don't have a product reference
+                variant = None
             else:
                 # Skip invalid items
                 logger.warning(f"Skipping invalid cart item: {cart_item.id}")
                 continue
-            
+
+            # Upper-bound the per-line quantity (defence in depth behind the cart
+            # caps): an extreme value would overflow the money columns below.
+            if cart_item.quantity > MAX_ITEM_QUANTITY:
+                flag_suspicious(request, reason='order.line_quantity', value=cart_item.quantity)
+                return Response({
+                    'error': f'Quantity for {item_name} exceeds the maximum of {MAX_ITEM_QUANTITY}.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             # Check stock availability
             if item_stock < cart_item.quantity:
                 return Response({
                     'error': f'Insufficient stock for {item_name}. Available: {item_stock}'
                 }, status=status.HTTP_400_BAD_REQUEST)
-            
+
             cart_items_data.append({
                 'item': item,
                 'product': product_ref,  # Will be None for combos
+                'variant': variant,  # Will be None for combos / legacy lines
                 'item_type': cart_item.item_type,
                 'product_name': item_name,
                 'product_weight': item_weight,
                 'quantity': cart_item.quantity,
                 'item_price': item_price,
+                # Per-product GST rate (%). Papad/papad katran are 0; default 5.
+                'tax_rate': Decimal(str(getattr(item, 'tax_rate', 5) or 0)),
+                'components': components,  # combo component draws (empty for products)
             })
             subtotal += item_price * cart_item.quantity
 
@@ -218,10 +313,42 @@ class OrderViewSet(viewsets.ModelViewSet):
         total_discount = self._calculate_discount(subtotal, coupon) if coupon else Decimal('0')
         discounted_subtotal = subtotal - total_discount
 
-        # Calculate shipping, tax, and total
+        # Per-line money (proportional discount + per-product tax). Computed once
+        # here so the OrderItem rows, the order header tax, and the grand total
+        # all agree exactly — the header tax is the SUM of the line taxes, which
+        # also fixes the old paisa-level mismatch from a flat order-level tax.
+        tax = Decimal('0')
+        for item_data in cart_items_data:
+            item_price = item_data['item_price']
+            quantity = item_data['quantity']
+            item_total = item_price * quantity
+
+            if total_discount > 0 and subtotal > 0:
+                item_discount = ((item_total / subtotal) * total_discount).quantize(Decimal('0.01'))
+            else:
+                item_discount = Decimal('0')
+
+            discounted_item_price = (item_price - (item_discount / quantity)).quantize(Decimal('0.01'))
+            discounted_item_total = (discounted_item_price * quantity).quantize(Decimal('0.01'))
+            item_tax = (discounted_item_total * item_data['tax_rate'] / Decimal('100')).quantize(Decimal('0.01'))
+
+            item_data['item_discount'] = item_discount
+            item_data['discounted_item_price'] = discounted_item_price
+            item_data['discounted_item_total'] = discounted_item_total
+            item_data['item_tax'] = item_tax
+            tax += item_tax
+
+        # Calculate shipping and total
         shipping_charge = Decimal('0') if discounted_subtotal >= 500 else Decimal('50')
-        tax = (discounted_subtotal * Decimal('0.05')).quantize(Decimal('0.01'))
         total_amount = (discounted_subtotal + shipping_charge + tax).quantize(Decimal('0.01'))
+
+        # Belt-and-suspenders: refuse an order whose computed money values would
+        # overflow the numeric(10,2) columns, returning a clean 400 instead of a
+        # 500 DB error. (Should be unreachable given the per-line quantity cap.)
+        if subtotal > MAX_ORDER_TOTAL or total_amount > MAX_ORDER_TOTAL:
+            flag_suspicious(request, reason='order.total_overflow', value=str(total_amount))
+            return Response({'error': 'Order total is too large. Please reduce quantities.'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # Create order in transaction
         try:
@@ -239,23 +366,16 @@ class OrderViewSet(viewsets.ModelViewSet):
                     **serializer.validated_data
                 )
 
-                # Create order items with proportional discounts
+                # Create order items, reusing the per-line money computed above
+                # (proportional discount + per-product tax) so the rows match the
+                # order header exactly.
                 for item_data in cart_items_data:
                     item_price = item_data['item_price']
                     quantity = item_data['quantity']
-                    item_total = item_price * quantity
-                    
-                    # Calculate proportional discount for this item
-                    if total_discount > 0 and subtotal > 0:
-                        item_discount = ((item_total / subtotal) * total_discount).quantize(Decimal('0.01'))
-                    else:
-                        item_discount = Decimal('0')
-                    
-                    discounted_item_price = (item_price - (item_discount / quantity)).quantize(Decimal('0.01'))
-                    discounted_item_total = (discounted_item_price * quantity).quantize(Decimal('0.01'))
-                    
-                    # Calculate tax for this item after discount
-                    item_tax = (discounted_item_total * Decimal('0.05')).quantize(Decimal('0.01'))
+                    item_discount = item_data['item_discount']
+                    discounted_item_price = item_data['discounted_item_price']
+                    discounted_item_total = item_data['discounted_item_total']
+                    item_tax = item_data['item_tax']
 
                     # Create OrderItem with proper product/combo reference
                     order_item_data = {
@@ -274,42 +394,80 @@ class OrderViewSet(viewsets.ModelViewSet):
                     # Set product or combo reference based on item type
                     if item_data['item_type'] == 'product':
                         order_item_data['product'] = item_data['product']
+                        order_item_data['variant'] = item_data['variant']
                     elif item_data['item_type'] == 'combo':
                         order_item_data['combo'] = item_data['item']
 
                     OrderItem.objects.create(**order_item_data)
                     
-                # Gather IDs for batch stock update (products only — combos have
-                # no stock field to decrement).
-                product_updates = {}
+                # Gather quantities for batch stock update. Stock lives on the
+                # variant; the legacy Product.stock is kept in sync for the
+                # default variant. We track two kinds of Product.stock decrement:
+                #   hard_updates   — must NOT oversell (legacy lines + G2 combo
+                #                    components); raise if stock is insufficient.
+                #   mirror_updates — default-variant mirror; clamp at 0 because a
+                #                    drifted legacy mirror should not fail an order.
+                variant_updates = {}
+                hard_updates = {}
+                mirror_updates = {}
 
                 for item_data in cart_items_data:
                     quantity = item_data['quantity']
-                    if item_data['item_type'] == 'product' and item_data.get('product'):
-                        product_updates[item_data['product'].pk] = product_updates.get(item_data['product'].pk, 0) + quantity
+                    if item_data['item_type'] == 'product':
+                        variant = item_data.get('variant')
+                        if variant:
+                            variant_updates[variant.pk] = variant_updates.get(variant.pk, 0) + quantity
+                        elif item_data.get('product'):
+                            pk = item_data['product'].pk
+                            hard_updates[pk] = hard_updates.get(pk, 0) + quantity
+                    elif item_data['item_type'] == 'combo':
+                        # G2: draw down each component product's real inventory.
+                        for product_id, units in item_data.get('components', []):
+                            hard_updates[product_id] = hard_updates.get(product_id, 0) + units
 
-                from products.models import Product
+                from products.models import Product, ProductVariant
 
-                # Batch reduce stock for products
-                if product_updates:
-                    products = list(Product.objects.select_for_update().filter(pk__in=product_updates.keys()))
+                # Batch reduce stock for variants (+ mirror default to product)
+                if variant_updates:
+                    variants = list(ProductVariant.objects.select_for_update().filter(pk__in=variant_updates.keys()))
+                    for variant in variants:
+                        reduce_by = variant_updates[variant.pk]
+                        if variant.stock < reduce_by:
+                            raise ValueError(f'Insufficient stock for {variant.product.name}. Available: {variant.stock}')
+                        variant.stock -= reduce_by
+                        if variant.is_default:
+                            mirror_updates[variant.product_id] = mirror_updates.get(variant.product_id, 0) + reduce_by
+                    ProductVariant.objects.bulk_update(variants, ['stock'])
+
+                # Batch reduce Product.stock under a row lock. Hard decrements
+                # (legacy lines + combo components) are re-checked against the
+                # LOCKED row, so two concurrent checkouts for the last unit can
+                # never both succeed (G4). Mirror decrements clamp at 0.
+                affected = set(hard_updates) | set(mirror_updates)
+                if affected:
+                    products = list(Product.objects.select_for_update().filter(pk__in=affected))
                     for product in products:
-                        reduce_by = product_updates[product.pk]
-                        if product.stock < reduce_by:
-                            raise ValueError(f'Insufficient stock for {product.name}. Available: {product.stock}')
-                        product.stock -= reduce_by
+                        hard = hard_updates.get(product.pk, 0)
+                        if hard and product.stock < hard:
+                            raise ValueError(
+                                f'Insufficient stock for {product.name}. Available: {product.stock}'
+                            )
+                        product.stock -= hard
+                        mirror = mirror_updates.get(product.pk, 0)
+                        if mirror:
+                            product.stock = max(0, product.stock - mirror)
                     Product.objects.bulk_update(products, ['stock'])
 
-                # Combos have no stock field (availability is governed only by
-                # is_active), so there is nothing to decrement. The previous code
-                # called ProductCombo.objects.bulk_update(combos, ['stock']) here,
-                # which raised FieldDoesNotExist and 500'd every order containing
-                # a combo.
-
-                # Increase usage count on coupon
+                # G5: increment coupon usage under a row lock and re-validate
+                # against the LOCKED row, so a max_usage / single-use coupon can
+                # never be over-redeemed by concurrent checkouts.
                 if coupon:
-                    coupon.usage_count = models.F('usage_count') + 1
-                    coupon.save(update_fields=['usage_count'])
+                    locked_coupon = Coupon.objects.select_for_update().get(pk=coupon.pk)
+                    reason = locked_coupon.get_invalid_reason(order_amount=subtotal)
+                    if reason:
+                        raise ValueError(reason)
+                    locked_coupon.usage_count = models.F('usage_count') + 1
+                    locked_coupon.save(update_fields=['usage_count'])
 
                 # Clear cart items securely inside the transaction to prevent desynchronization
                 cart.items.all().delete()
@@ -321,15 +479,20 @@ class OrderViewSet(viewsets.ModelViewSet):
             logger.warning(f"Order creation validation failed: {str(e)}")
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            logger.error(f"Order creation failed: {str(e)}")
+            # Log the detail server-side; never echo the raw DB/internal error to
+            # the client (it leaks schema details).
+            logger.exception("Order creation failed")
             return Response(
-                {'error': f'Failed to create order: {str(e)}'}, 
+                {'error': 'Could not place the order. Please try again.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         
         # Generate order number
         order_number = f"ORD-{order.id:06d}"
-        
+
+        # Purchase analytics are captured by the analytics app via a post_save
+        # signal on Order (see analytics/signals.py) — no inline call needed.
+
         return Response({
             'message': 'Order created successfully',
             'order_id': order.id,
@@ -358,31 +521,39 @@ class OrderViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            from products.models import Product, ProductCombo
-            
+            from products.models import Product, ProductVariant, ProductComboItem
+
             # Gather quantities for batch stock restoration
+            variant_updates = {}
             product_updates = {}
-            combo_updates = {}
-            
-            for item in order.items.select_related('product', 'combo').all():
-                if item.product:
+
+            for item in order.items.select_related('product', 'combo', 'variant').all():
+                if item.item_type == 'product' and item.variant:
+                    variant_updates[item.variant.pk] = variant_updates.get(item.variant.pk, 0) + item.quantity
+                elif item.product:
                     product_updates[item.product.pk] = product_updates.get(item.product.pk, 0) + item.quantity
-                elif item.combo and hasattr(item.combo, 'stock'):
-                    combo_updates[item.combo.pk] = combo_updates.get(item.combo.pk, 0) + item.quantity
-                    
-            # Batch restore stock for products
+                elif item.combo:
+                    # G2 symmetry: a combo consumed its component products at
+                    # checkout, so cancelling must give that inventory back.
+                    for ci in ProductComboItem.objects.filter(combo=item.combo).select_related('product'):
+                        product_updates[ci.product_id] = product_updates.get(ci.product_id, 0) + ci.quantity * item.quantity
+
+            # Batch restore stock for variants (+ mirror default to product)
+            if variant_updates:
+                variants = list(ProductVariant.objects.select_for_update().filter(pk__in=variant_updates.keys()))
+                for variant in variants:
+                    restore_by = variant_updates[variant.pk]
+                    variant.stock += restore_by
+                    if variant.is_default:
+                        product_updates[variant.product_id] = product_updates.get(variant.product_id, 0) + restore_by
+                ProductVariant.objects.bulk_update(variants, ['stock'])
+
+            # Batch restore stock for products (legacy lines + default mirror + combo components)
             if product_updates:
                 products = list(Product.objects.select_for_update().filter(pk__in=product_updates.keys()))
                 for product in products:
                     product.stock += product_updates[product.pk]
                 Product.objects.bulk_update(products, ['stock'])
-                
-            # Batch restore stock for combos
-            if combo_updates:
-                combos = list(ProductCombo.objects.select_for_update().filter(pk__in=combo_updates.keys()))
-                for combo in combos:
-                    combo.stock += combo_updates[combo.pk]
-                ProductCombo.objects.bulk_update(combos, ['stock'])
             
             order.status = 'cancelled'
             order.cancelled_at = timezone.now()
@@ -393,6 +564,37 @@ class OrderViewSet(viewsets.ModelViewSet):
             'message': 'Order cancelled successfully',
             'order': OrderDetailSerializer(order).data
         })
+
+    @action(detail=True, methods=['get'])
+    def invoice(self, request, pk=None):
+        """
+        Generate and return a PDF tax invoice / bill for the order.
+        Filled dynamically from the order, its user, and its line items.
+        get_object() enforces ownership (or staff access) via get_queryset().
+        """
+        from django.http import HttpResponse
+
+        order = self.get_object()
+        try:
+            from .invoice import generate_invoice_pdf
+            pdf_bytes = generate_invoice_pdf(order)
+        except ImportError:
+            logger.error("reportlab is not installed; cannot generate invoice PDF")
+            return Response(
+                {'error': 'Invoice generation is not available on the server.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except Exception as e:
+            logger.error(f"Invoice generation failed for order {order.id}: {e}")
+            return Response(
+                {'error': 'Failed to generate invoice'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        filename = f"invoice-ORD-{order.id:06d}.pdf"
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
     def list(self, request):
         """

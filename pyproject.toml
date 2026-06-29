@@ -1,0 +1,47 @@
+# Tooling config for the NGU backend.
+# Ruff = formatter + linter (one tool). Mypy = type checking (advisory for now).
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Generated / vendored code we don't lint.
+extend-exclude = ["**/migrations/*", "venv", ".venv"]
+
+[tool.ruff.lint]
+# Start with a sensible, non-noisy core. Expand over time.
+#   E,W  pycodestyle   F  pyflakes   I  isort   UP  pyupgrade
+#   B    bugbear       C4 comprehensions        DJ  flake8-django
+select = ["E", "W", "F", "I", "UP", "B", "C4", "DJ"]
+ignore = [
+    "E501",   # line length is handled by the formatter, not the linter
+    "B008",   # function calls in argument defaults (common, intentional in DRF)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and settings legitimately do star-imports and unused names.
+"**/tests*.py" = ["F401", "F811"]
+"**/test_*.py" = ["F401", "F811"]
+"spices_backend/settings.py" = ["F403", "F405"]
+"spices_backend/*_settings.py" = ["F403", "F405"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "products", "orders", "cart", "users", "payments", "reviews",
+    "support", "admin_panel", "assistant", "analytics", "spices_backend",
+]
+
+# ---------------------------------------------------------------------------
+# Mypy: advisory to start. The django/drf stub plugins remove the bulk of the
+# false positives; keep it lenient so it is adoptable on an existing codebase,
+# then tighten module-by-module.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+ignore_missing_imports = true
+check_untyped_defs = false
+warn_unused_ignores = false
+exclude = ["migrations", "venv", "\\.venv", "tests"]
+
+[tool.django-stubs]
+django_settings_module = "spices_backend.test_settings"

@@ -1,6 +1,6 @@
 from django.db import models
 from django.conf import settings
-from products.models import Product
+from products.models import Product, ProductVariant
 from admin_panel.models import Coupon  # Add this import
 import uuid
 
@@ -20,7 +20,6 @@ class Order(models.Model):
     PAYMENT_METHOD_CHOICES = [
         ('COD', 'Cash on Delivery'),
         ('ONLINE', 'Online Payment'),
-        ('stripe', 'Stripe'),
         ('razorpay', 'Razorpay'),
     ]
 
@@ -78,6 +77,12 @@ class OrderItem(models.Model):
     
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.PROTECT, null=True, blank=True)
+    # The specific size purchased. Nullable for combos and historical rows; the
+    # human-readable size is also snapshotted in product_weight for permanence.
+    variant = models.ForeignKey(
+        ProductVariant, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='order_items'
+    )
     combo = models.ForeignKey(
         'products.ProductCombo', 
         on_delete=models.PROTECT, 

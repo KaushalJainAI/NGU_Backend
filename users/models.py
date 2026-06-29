@@ -31,6 +31,15 @@ class User(AbstractUser):
         verbose_name_plural = 'Users'
         ordering = ['-created_at']
 
+    def save(self, *args, **kwargs):
+        # Email is the login identifier (USERNAME_FIELD). Normalise it to a
+        # canonical lower-case form on every write so that "User@x.com" and
+        # "user@x.com" can never become two distinct accounts, and so login
+        # (which resolves email case-insensitively) is never ambiguous.
+        if self.email:
+            self.email = self.email.strip().lower()
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.email
 

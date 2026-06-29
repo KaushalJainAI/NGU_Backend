@@ -16,7 +16,9 @@ class OrderItemListSerializer(serializers.ModelSerializer):
     item_type = serializers.CharField()
     product_id = serializers.SerializerMethodField()
     combo_id = serializers.SerializerMethodField()
+    variant_id = serializers.SerializerMethodField()
     product_name = serializers.CharField()
+    weight = serializers.CharField(source='product_weight')
     image = serializers.SerializerMethodField()  # Add image field
     quantity = serializers.IntegerField()
     price = serializers.DecimalField(max_digits=10, decimal_places=2)
@@ -29,7 +31,9 @@ class OrderItemListSerializer(serializers.ModelSerializer):
             "item_type",
             "product_id",
             "combo_id",
+            "variant_id",
             "product_name",
+            "weight",
             "image",  # Include image in fields
             "quantity",
             "price",
@@ -38,9 +42,12 @@ class OrderItemListSerializer(serializers.ModelSerializer):
 
     def get_product_id(self, obj):
         return obj.product.id if obj.product else None
-    
+
     def get_combo_id(self, obj):
         return obj.combo.id if obj.combo else None
+
+    def get_variant_id(self, obj):
+        return obj.variant_id
 
     def get_image(self, obj):
         """Get absolute image URL for product or combo"""

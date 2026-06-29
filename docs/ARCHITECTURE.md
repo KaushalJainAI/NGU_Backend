@@ -38,10 +38,12 @@ lookup_field = 'slug'
 ```
 
 ### 4. **Intelligent Caching**
-Redis caches are scoped with prefixes and invalidated on writes:
-- `ngu:products:list` - Product listing
-- `ngu:categories:list` - Category listing  
-- `ngu:dashboard:stats` - Dashboard statistics
+Redis caches are scoped with the `ngu:` prefix and invalidated on writes:
+- `ngu:products:*` — product listing and detail
+- `ngu:categories:*` — category listing
+- `ngu:sections:*` — homepage sections
+- `ngu:search:corpus:v1` — full search corpus (names + synonyms)
+- `ngu:dashboard:*` — dashboard statistics
 
 ---
 
@@ -73,39 +75,40 @@ PENDING → CONFIRMED → PROCESSING → SHIPPED → DELIVERED
 
 ### 1. Cart: Product vs Combo Items
 
-The cart supports both products and combos through **separate fields**:
+The cart supports both products and combos through **separate fields**, with a `variant` FK for product lines:
 ```python
 class CartItem(models.Model):
-    product = models.ForeignKey(Product, null=True)      # Regular product
-    combo = models.ForeignKey(ProductCombo, null=True)   # Combo pack
-    # Either product OR combo is set, never both
+    product = models.ForeignKey(Product, null=True)           # Regular product
+    variant = models.ForeignKey(ProductVariant, null=True)    # The specific size/packaging
+    combo = models.ForeignKey(ProductCombo, null=True)        # Combo pack
+    # DB CheckConstraint: either product OR combo is set, never both
+    # DB constraint: variant is always set for product lines
 ```
 
-**Why?** Combos have different pricing logic (bundled discount) and different stock tracking (per-product in combo).
+**Why?** Combos have different pricing logic (bundled discount) and different stock tracking (per-product in combo). `ProductVariant` is the actual unit of sale — it tracks the exact size and price purchased (100g vs 500g, etc.).
 
-### 2. Order ID Format
+### 2. Order ID
 
-Orders use a human-readable format: `ORD-XXXXXX`
+Orders use a UUID primary key:
 ```python
-def generate_order_id():
-    return f"ORD-{uuid.uuid4().hex[:6].upper()}"
+order_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
 ```
 
-**Why?** Easier for customer support to reference verbally and in chat.
+**Why?** Prevents sequential enumeration of orders (a common BOLA vector).
 
 ### 3. Product Images: Main vs Gallery
 
 Products have TWO image sources:
-1. **Main image** (`Product.image`) - Primary display image
-2. **Gallery images** (`ProductImage` model) - Additional views
+1. **Main image** (`Product.image`) — Primary display image
+2. **Gallery images** (`ProductImage` model) — Additional views
 
 ```python
 class Product(models.Model):
-    image = models.ImageField()  # Main image, stored on model
-    
+    image = models.ImageField()  # Main image
+
 class ProductImage(models.Model):
     product = ForeignKey(Product)
-    image = models.ImageField()  # Gallery images, separate model
+    image = models.ImageField()  # Gallery images
 ```
 
 ### 4. Combo Pricing
@@ -113,53 +116,67 @@ class ProductImage(models.Model):
 Combos store `price` (the combo price) and `discount_price` (optional discounted price).
 The `total_original_price` property computes the sum of individual product prices:
 ```python
-class ProductCombo(models.Model):
-    price = models.DecimalField()           # Combo bundle price
-    discount_price = models.DecimalField()  # Optional discounted price
-    
-    @property
-    def final_price(self):
-        return self.discount_price if self.discount_price else self.price
+@property
+def final_price(self):
+    return self.discount_price if self.discount_price else self.price
 
-    @property
-    def total_original_price(self):
-        # Sum of individual product prices * quantity
-        return self.productcomboitem_set.aggregate(...)
-
-    @property
-    def discount_percentage(self):
-        if self.discount_price and self.discount_price < self.price:
-            return int(((self.price - self.discount_price) / self.price) * 100)
-        return 0
+@property
+def discount_percentage(self):
+    if self.discount_price and self.discount_price < self.price:
+        return int(((self.price - self.discount_price) / self.price) * 100)
+    return 0
 ```
 
-### 5. S3 Storage Configuration (Django 5.x)
+### 5. Media Storage: Cloudinary-First
 
-Django 5.x uses `STORAGES` dict instead of deprecated `DEFAULT_FILE_STORAGE`:
+Media files (product/category/profile images, chat attachments) are stored on
+**Cloudinary** when `USE_CLOUDINARY=True` (the production default). Static files
+(CSS/JS) use AWS S3 when `USE_S3=True`, or the local filesystem otherwise.
+
 ```python
-STORAGES = {
-    "default": {
-        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
-        "OPTIONS": {"location": "media"},
-    },
-    "staticfiles": {
-        "BACKEND": "storages.backends.s3boto3.S3StaticStorage",
-        "OPTIONS": {"location": "static"},
-    },
-}
+# Precedence for the default (media) storage backend:
+#   USE_CLOUDINARY  →  Cloudinary  (preferred)
+#   USE_S3          →  AWS S3
+#   neither         →  local filesystem
 ```
 
-### 6. Chat Support: Order-Scoped Sessions
+Cloudinary is a **hard startup dependency** — if `CLOUDINARY_CLOUD_NAME`,
+`CLOUDINARY_API_KEY`, or `CLOUDINARY_API_SECRET` are missing the backend will
+crash-loop on boot.
 
-Chat sessions are tied to specific orders:
-```python
-class ChatSession(models.Model):
-    user = ForeignKey(User)
-    order = ForeignKey(Order)  # Session is per-order
-    is_active = models.BooleanField()
-```
+See `Backend/docs/S3_STORAGE.md` for full storage configuration details.
 
-**Why?** Allows customer to discuss issues about a specific order without confusion.
+### 6. Unified Chat (AI + Human Admin)
+
+There is one conversation system for everything — AI shopping help, voice ordering,
+and human-admin support all share the same thread (`AssistantConversation` /
+`AssistantMessage`). The old order-scoped `support.ChatSession` system was removed.
+
+**Why?** A single inbox for admins and a single widget for customers. Order context
+is carried as text in the conversation rather than a rigid order↔thread FK, so a
+customer can ask about anything in one place. See `docs/ASSISTANT.md`.
+
+### 7. AI Shopping Assistant
+
+The `assistant` app provides a tool-calling AI agent at `POST /api/assistant/chat/`.
+It is open to anonymous users for product Q&A; cart/order tools require authentication
+(enforced in `tools.py`). The view is the trust boundary that supplies the
+authenticated user to the agent. Conversations are persisted in `AssistantConversation`
+and `AssistantMessage` models, scoped by user or anonymous session ID.
+
+### 8. Behavioral Analytics + Recommendations
+
+The `analytics` app ingests `UserEvent` rows (view, click, add-to-cart, purchase, etc.)
+via `POST /api/events/`. These events feed `products/personalization.py` which returns
+personalized product recommendations at `GET /api/recommendations/`.
+
+### 9. Multilingual Content (django-modeltranslation)
+
+Product and Category fields (`name`, `description`, `ingredients`, etc.) have
+per-language database columns generated by `django-modeltranslation`. Language is
+selected at request time via `?lang=` query parameter or `X-Language` header.
+Supported: `en`, `hi`, `hinglish`, `gu`, `mr`, `pa`. Empty translations fall back
+to English automatically.
 
 ---
 
@@ -167,31 +184,40 @@ class ChatSession(models.Model):
 
 | App | Responsibility |
 |-----|----------------|
-| `users` | Authentication, profiles, JWT tokens |
-| `products` | Catalog (products, combos, categories, images) |
-| `cart` | Shopping cart with stock validation |
-| `orders` | Order creation, status, history |
-| `payments` | Payment processing (Razorpay) |
-| `reviews` | Product ratings and reviews |
-| `support` | Customer chat per order |
-| `admin_panel` | Dashboard, coupons, policies, receivable accounts |
+| `users` | Authentication, profiles, JWT tokens, Google OAuth |
+| `products` | Catalog (products, combos, categories, images, sections, search KB) |
+| `cart` | Shopping cart with stock validation, favorites |
+| `orders` | Order creation, status, history, coupon redemption |
+| `payments` | Payment processing (Razorpay), saved payment methods |
+| `reviews` | Verified-purchase product ratings and reviews |
+| `admin_panel` | Dashboard stats, coupons, policies, receivable accounts |
+| `support` | Contact form submissions (order-scoped live chat was removed — all conversations are now in `assistant`) |
+| `assistant` | AI shopping assistant (tool-calling agent, multilingual) |
+| `analytics` | Behavioral event ingest; source data for recommendations |
 
 ---
 
 ## Database Relationships
 
 ```
-User ──┬── Cart ──── CartItem ──┬── Product
+User ──┬── Cart ──── CartItem ──┬── Product ── ProductVariant ◀─┐
+       │                        │                                 │
+       │                        ├── ProductVariant ───────────────┘
        │                        └── ProductCombo ── ProductComboItem ── Product
        │
        ├── Order ── OrderItem ──┬── Product
+       │                        ├── ProductVariant
        │                        └── ProductCombo
        │
        ├── Review ── Product
        │
-       └── ChatSession ── ChatMessage
+       ├── AssistantConversation ── AssistantMessage
+       │
+       └── UserEvent ──┬── Product (optional)
+                       └── ProductCombo (optional)
 
-Category ── Product ── ProductImage
+Category ── Product ──┬── ProductVariant (unit of sale)
+                      └── ProductImage (gallery)
 ```
 
 ---
@@ -203,6 +229,7 @@ Category ── Product ── ProductImage
 3. **Owner Check**: Users can only access their own carts, orders, profiles
 4. **Admin Check**: Dashboard/coupons require `is_staff=True`
 5. **Payment Verification**: Razorpay signatures verified server-side
+6. **Assistant Isolation**: Conversation threads are scoped to a user or anon session; the agent cannot read another user's data
 
 ---
 

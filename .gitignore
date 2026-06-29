@@ -59,9 +59,10 @@ Desktop.ini
 .env.local
 .env.production
 .env.staging
-.env.*.local
+.env.*
 .envrc
 # Keep .env.example - it's safe to commit
+!.env.example
 
 # Sensitive credentials
 *.pem
@@ -86,7 +87,18 @@ coverage.xml
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
+# Local feature-demo scaffolding (generated DB, slides, video, server logs)
+/demo/
+
 # Docker-related files - commented out to track Dockerfiles in version control
 # Dockerfile
 # docker-compose.yml
+
+.env.prod.bak
+
+# Session logs and temporary workspace notes
+*this-session-is-being-continued*.txt
+
+# SQL patches/dumps
+*.sql
 

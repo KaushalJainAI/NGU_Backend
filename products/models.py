@@ -10,6 +10,28 @@ import io
 import os
 
 
+def _generate_unique_slug(model_cls, base_slug, *, fallback, current_pk=None):
+    """Return a slug unique within ``model_cls`` using bounded ``exists()`` queries.
+
+    Replaces the previous exception-driven retry loops that ran ``full_clean()`` /
+    ``save()`` inside a nested ``transaction.atomic()`` and caught
+    ValidationError/IntegrityError to bump the slug. That pattern could deadlock on
+    a constraint-validation savepoint when executed inside an outer transaction
+    (e.g. a request or test wrapped in ``atomic()``); computing the slug with plain
+    SELECTs before any write avoids the nested savepoint entirely.
+    """
+    base = base_slug or fallback
+    slug = base
+    counter = 1
+    qs = model_cls.objects.all()
+    if current_pk is not None:
+        qs = qs.exclude(pk=current_pk)
+    while qs.filter(slug=slug).exists():
+        slug = f"{base}-{counter}"
+        counter += 1
+    return slug
+
+
 class ProductSection(models.Model):
     """Model for organizing products into homepage sections"""
     SECTION_TYPE_CHOICES = [
@@ -35,7 +57,7 @@ class ProductSection(models.Model):
         help_text='Order in which sections appear on homepage'
     )
     max_products = models.PositiveIntegerField(
-        default=8,
+        default=12,
         validators=[MinValueValidator(1)],
         help_text='Maximum number of products to display in this section'
     )
@@ -61,12 +83,16 @@ class ProductSection(models.Model):
         super().save(*args, **kwargs)
 
     def get_products(self):
-        """Get products for this section, limited by max_products - OPTIMIZED"""
+        """Get products for this section in the admin-defined order, limited by
+        max_products. Ordered by the through model's position.
+
+        NB: no .only() here — deferring fields hides modeltranslation's
+        per-language columns (name_hi, ...), which would make translated
+        content silently fall back to English."""
         return self.products.filter(
             is_active=True
-        ).select_related('category').only(
-            'id', 'name', 'slug', 'image', 'price', 'discount_price',
-            'weight', 'unit', 'badge', 'is_featured', 'category__name'
+        ).select_related('category').prefetch_related('variants').order_by(
+            'productsectionplacement__position', 'productsectionplacement__id'
         )[:self.max_products]
     
     def get_combos(self):
@@ -100,7 +126,6 @@ class Category(models.Model):
         indexes = [
             models.Index(fields=['slug']),
             models.Index(fields=['is_active']),
-            models.Index(fields=['is_active', 'name']),
         ]
 
     def __str__(self):
@@ -108,24 +133,8 @@ class Category(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            base_slug = slugify(self.name)
-            if not base_slug:
-                base_slug = "category"
-            slug = base_slug
-            counter = 1
-            from django.core.exceptions import ValidationError
-            from django.db import transaction, IntegrityError
-            while True:
-                self.slug = slug
-                try:
-                    self.full_clean()
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    return
-                except (ValidationError, IntegrityError):
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
-                    
+            self.slug = _generate_unique_slug(
+                type(self), slugify(self.name), fallback="category", current_pk=self.pk)
         self.full_clean()
         super().save(*args, **kwargs)
 
@@ -172,13 +181,22 @@ class Product(models.Model):
         validators=[MinValueValidator(0)]
     )
     discount_price = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2, 
-        blank=True, 
+        max_digits=10,
+        decimal_places=2,
+        blank=True,
         null=True,
         validators=[MinValueValidator(0)]
     )
-    
+    # Tax rate (GST %) applied to this product at checkout. Defaults to 5% for
+    # all products; some goods are tax-exempt (e.g. papad / papad katran => 0).
+    tax_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='GST percentage charged on this product (e.g. 5 for 5%, 0 for exempt items like papad).'
+    )
+
     # Inventory
     stock = models.IntegerField(
         default=0,
@@ -226,9 +244,12 @@ class Product(models.Model):
     is_featured = models.BooleanField(default=False)
     badge = models.CharField(max_length=20, blank=True)
     
-    # Section placement - ManyToMany relationship
+    # Section placement - ManyToMany relationship.
+    # Uses an explicit through model so admins can order products WITHIN a
+    # section (ProductSectionPlacement.position), not just pick which appear.
     sections = models.ManyToManyField(
         ProductSection,
+        through='ProductSectionPlacement',
         related_name='products',
         blank=True,
         help_text='Homepage sections where this product appears'
@@ -265,36 +286,18 @@ class Product(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            # Generate base slug from name and weight (handle None weight)
             weight_part = f"-{self.weight}" if self.weight else ""
-            base_slug = slugify(f"{self.name}{weight_part}")
-            
-            # Fallback if slugify results in empty string
-            if not base_slug:
-                base_slug = "product"
-                
-            slug = base_slug
-            counter = 1
-            from django.core.exceptions import ValidationError
-            from django.db import transaction, IntegrityError
-            while True:
-                self.slug = slug
-                try:
-                    self.full_clean()
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    return
-                except (ValidationError, IntegrityError):
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
-        
+            self.slug = _generate_unique_slug(
+                type(self), slugify(f"{self.name}{weight_part}"),
+                fallback="product", current_pk=self.pk)
+
         # Run validation
         self.full_clean()
-        
+
         # Generate thumbnail if image exists
         if self.image:
             self.generate_thumbnail()
-            
+
         super().save(*args, **kwargs)
 
     def generate_thumbnail(self):
@@ -355,6 +358,138 @@ class Product(models.Model):
         return str(self.weight or "")
 
 
+class ProductVariant(models.Model):
+    """A specific packaging/size of a Product (e.g. 100g, 500g, 1kg).
+
+    Lets one spice be offered in multiple packagings. Each variant carries its
+    own price / discount / stock / weight; the parent Product holds the shared
+    content (name, description, image, category, etc.).
+
+    ADDITIVE ROLLOUT: the legacy per-size fields on Product
+    (price/discount_price/stock/weight/unit) are intentionally KEPT for now.
+    Every existing Product is backfilled with one is_default variant copying
+    those values, so nothing downstream breaks until later phases move
+    cart/orders/serializers onto variants.
+    """
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='variants'
+    )
+
+    # Per-size attributes (mirror the legacy Product fields)
+    weight = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text='Numerical value of the weight'
+    )
+    unit = models.CharField(
+        max_length=50, blank=True, null=True, choices=Product.UNIT_CHOICES,
+        help_text='e.g., g, kg, pc'
+    )
+    price = models.DecimalField(
+        max_digits=10, decimal_places=2, validators=[MinValueValidator(0)]
+    )
+    discount_price = models.DecimalField(
+        max_digits=10, decimal_places=2, blank=True, null=True,
+        validators=[MinValueValidator(0)]
+    )
+    stock = models.IntegerField(default=0, validators=[MinValueValidator(0)])
+
+    sku = models.CharField(max_length=64, blank=True)
+    slug = models.SlugField(max_length=220, unique=True, blank=True)
+
+    is_default = models.BooleanField(
+        default=False,
+        help_text='The size shown by default on listings and the product page'
+    )
+    is_active = models.BooleanField(default=True)
+    display_order = models.PositiveIntegerField(
+        default=0, help_text='Order of this size on the product page (lower first)'
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['product', 'display_order', 'weight']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(stock__gte=0), name='variant_stock_non_negative'
+            ),
+            # At most one default size per product (partial unique index — Postgres).
+            models.UniqueConstraint(
+                fields=['product'],
+                condition=models.Q(is_default=True),
+                name='one_default_variant_per_product',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['product', 'is_active']),
+            models.Index(fields=['slug']),
+        ]
+
+    def __str__(self):
+        return f"{self.product.name} - {self.formatted_weight}"
+
+    def clean(self):
+        if self.discount_price and self.price and self.discount_price >= self.price:
+            raise ValidationError({
+                'discount_price': 'Discount price must be less than regular price.'
+            })
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            weight_part = f"-{self.formatted_weight}" if self.weight else ""
+            self.slug = _generate_unique_slug(
+                type(self), slugify(f"{self.product.name}{weight_part}"),
+                fallback="variant", current_pk=self.pk)
+        super().save(*args, **kwargs)
+
+    @property
+    def final_price(self):
+        return self.discount_price if self.discount_price else self.price
+
+    @property
+    def discount_percentage(self):
+        if self.discount_price and self.discount_price < self.price:
+            return int(((self.price - self.discount_price) / self.price) * 100)
+        return 0
+
+    @property
+    def in_stock(self):
+        return self.stock > 0
+
+    @property
+    def formatted_weight(self):
+        """Weight with unit, trailing zeros stripped (e.g. '250g', '1kg')."""
+        if self.weight and self.unit:
+            w = float(self.weight)
+            if w.is_integer():
+                w = int(w)
+            return f"{w}{self.unit}"
+        return str(self.weight or "")
+
+
+class ProductSectionPlacement(models.Model):
+    """Through model for Product.sections: lets an admin order products within
+    a homepage section. Reuses the original auto-M2M join table (db_table +
+    db_column below) so the conversion preserves existing placements."""
+    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    section = models.ForeignKey(
+        ProductSection, on_delete=models.CASCADE, db_column='productsection_id'
+    )
+    position = models.PositiveIntegerField(
+        default=0,
+        help_text='Order of this product within the section (lower shows first)'
+    )
+
+    class Meta:
+        db_table = 'products_product_sections'
+        ordering = ['position']
+        unique_together = (('product', 'section'),)
+
+    def __str__(self):
+        return f"{self.product.name} in {self.section.name} @ {self.position}"
+
+
 class ProductImage(models.Model):
     """Additional images for products (gallery)"""
     product = models.ForeignKey(
@@ -411,8 +546,16 @@ class ProductCombo(models.Model):
         null=True,
         validators=[MinValueValidator(0)]
     )
+    # Tax rate (GST %) applied to this combo at checkout. Defaults to 5%.
+    tax_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text='GST percentage charged on this combo (e.g. 5 for 5%, 0 for exempt).'
+    )
     image = models.ImageField(
-        upload_to='combos/', 
+        upload_to='combos/',
         blank=True, 
         null=True,
         validators=[validate_file_size, validate_image_extension]
@@ -473,31 +616,16 @@ class ProductCombo(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            base_slug = slugify(self.name)
-            if not base_slug:
-                base_slug = "combo"
-            slug = base_slug
-            counter = 1
-            from django.core.exceptions import ValidationError
-            from django.db import transaction, IntegrityError
-            while True:
-                self.slug = slug
-                try:
-                    self.full_clean()
-                    with transaction.atomic():
-                        super().save(*args, **kwargs)
-                    return
-                except (ValidationError, IntegrityError):
-                    slug = f"{base_slug}-{counter}"
-                    counter += 1
-        
+            self.slug = _generate_unique_slug(
+                type(self), slugify(self.name), fallback="combo", current_pk=self.pk)
+
         # Run validation
         self.full_clean()
-        
+
         # Generate thumbnail if image exists
         if self.image:
             self.generate_thumbnail()
-            
+
         super().save(*args, **kwargs)
 
     def generate_thumbnail(self):

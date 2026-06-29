@@ -68,5 +68,23 @@ class ReviewViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError({
                 "error": "You can only review items from orders that have been confirmed or delivered"
             })
-        
+
         serializer.save(user=self.request.user, is_verified_purchase=True)
+
+    def perform_update(self, serializer):
+        # A review's subject is fixed at creation. Without this, a user could
+        # PATCH a verified review onto a DIFFERENT product/combo they never
+        # bought (is_verified_purchase is read-only and would stay True),
+        # manufacturing fake "verified" reviews. Only rating/title/comment may
+        # change; to review another item, create a new (verified) review.
+        instance = serializer.instance
+        new_type = serializer.validated_data.get('item_type', instance.item_type)
+        new_product = serializer.validated_data.get('product', instance.product)
+        new_combo = serializer.validated_data.get('combo', instance.combo)
+        if (new_type != instance.item_type
+                or new_product != instance.product
+                or new_combo != instance.combo):
+            raise serializers.ValidationError({
+                "error": "The reviewed item cannot be changed. Please create a new review instead."
+            })
+        serializer.save()

@@ -49,17 +49,27 @@ class Coupon(models.Model):
     usage_count = models.PositiveIntegerField(default=0)
     minimum_order_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
-    def is_valid(self, order_amount=None):
+    def get_invalid_reason(self, order_amount=None):
+        """Return a specific, user-facing reason this coupon cannot be applied,
+        or None if it is valid. The message states the ACTUAL problem so the user
+        can act on it (top up the order, stop retrying an expired code…)."""
         from django.utils import timezone
         if not self.is_active:
-            return False
+            return "This coupon is no longer active."
         if self.valid_until and self.valid_until < timezone.now():
-            return False
+            return "This coupon has expired."
         if self.max_usage is not None and self.usage_count >= self.max_usage:
-            return False
+            return "This coupon has reached its usage limit."
         if order_amount is not None and order_amount < self.minimum_order_amount:
-            return False
-        return True
+            shortfall = self.minimum_order_amount - order_amount
+            return (f"Add ₹{shortfall:.0f} more to use this coupon "
+                    f"(minimum order ₹{self.minimum_order_amount:.0f}).")
+        return None
+
+    def is_valid(self, order_amount=None):
+        """Backwards-compatible boolean; the specific reason lives in
+        get_invalid_reason()."""
+        return self.get_invalid_reason(order_amount) is None
 
     def __str__(self):
         return self.code
@@ -67,7 +77,8 @@ class Coupon(models.Model):
 class Policy(models.Model):
     POLICY_TYPES = [
         ('shipping', 'Shipping'),
-        ('return', 'Return')
+        ('return', 'Return'),
+        ('privacy', 'Privacy'),
     ]
     type = models.CharField(max_length=16, choices=POLICY_TYPES, unique=True)
     content = models.TextField()

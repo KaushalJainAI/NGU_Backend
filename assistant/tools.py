@@ -1,0 +1,517 @@
+"""Closed tool registry for the AI assistant.
+
+SECURITY (G1/G2): This module is the data trust boundary. The language model
+can ONLY trigger the tools defined here, with strictly validated arguments.
+
+- No tool accepts a user identifier (user_id / email / phone). The model has no
+  vocabulary to request another user's data.
+- Every user-scoped read is hard-filtered by the authenticated `user` passed in
+  from the view — never by anything the model emitted.
+- Tools return only public, whitelisted fields (mirroring the public search
+  serializers). No cost price, margins, supplier data, staff, or internal flags.
+- There are no list/enumerate tools (no list_orders / list_users / search_customers).
+"""
+
+import logging
+import re
+from decimal import Decimal
+
+from products.models import Product, ProductCombo, Category
+from products.recommendations import build_suggestions
+
+logger = logging.getLogger(__name__)
+
+# Max quantity the assistant will ever propose adding in one go (clamp, G5).
+MAX_PROPOSE_QTY = 10
+
+# Login wall message for anonymous users hitting user-scoped tools (G1).
+LOGIN_REQUIRED = {
+    'error': 'login_required',
+    'message': 'Please log in to access your cart and orders.',
+}
+
+# ----------------------------------------------------------------------------
+# Navigation allowlist (G6) — the assistant can only ever send users to known
+# in-app routes. Static routes plus two dynamic patterns whose slug is verified
+# to exist before the route is returned. No external URLs, no open redirect.
+# ----------------------------------------------------------------------------
+NAV_STATIC_ROUTES = {
+    '/', '/products', '/combos', '/offer-zone', '/cart', '/billing',
+    '/my-orders', '/favorites', '/about', '/contact', '/track-order',
+    '/shipping-policy', '/return-policy',
+}
+_PRODUCT_ROUTE = re.compile(r'^/products/([\w-]+)$')
+_COMBO_ROUTE = re.compile(r'^/combos/([\w-]+)$')
+
+
+def _safe_route(route):
+    """Return the route if it is allowlisted (and any slug exists), else None."""
+    if not isinstance(route, str):
+        return None
+    route = route.strip()
+    if route in NAV_STATIC_ROUTES:
+        return route
+    m = _PRODUCT_ROUTE.match(route)
+    if m and Product.objects.filter(slug=m.group(1), is_active=True).exists():
+        return route
+    m = _COMBO_ROUTE.match(route)
+    if m and ProductCombo.objects.filter(slug=m.group(1), is_active=True).exists():
+        return route
+    return None
+
+
+# ----------------------------------------------------------------------------
+# Serialization helpers — public fields ONLY (G2)
+# ----------------------------------------------------------------------------
+def _product_public(p, full=False):
+    data = {
+        'id': p.id,
+        'name': p.name,
+        'slug': p.slug,
+        'type': 'product',
+        'price': float(p.final_price),
+        'original_price': float(p.price),
+        'in_stock': p.stock > 0,
+        'route': f'/products/{p.slug}',
+    }
+    if full:
+        data.update({
+            'category': getattr(p.category, 'name', '') if p.category_id else '',
+            'spice_form': p.spice_form,
+            'weight': p.formatted_weight,
+            'description': (p.description or '')[:600],
+            'ingredients': (p.ingredients or '')[:300],
+        })
+    return data
+
+
+def _combo_public(c, full=False):
+    data = {
+        'id': c.id,
+        'name': c.name,
+        'slug': c.slug,
+        'type': 'combo',
+        'price': float(c.final_price),
+        'original_price': float(c.price),
+        # Combos carry no stock field in the model (availability is governed only
+        # by is_active), so they are always reported in stock — consistent with
+        # the rest of the app. Revisit if combos ever track member-product stock.
+        'in_stock': True,
+        'route': f'/combos/{c.slug}',
+    }
+    if full:
+        data['description'] = (c.description or '')[:600]
+    return data
+
+
+def _order_number(order):
+    return f'ORD-{order.id:06d}'
+
+
+# ----------------------------------------------------------------------------
+# READ TOOLS (executed server-side inside the agent loop)
+# ----------------------------------------------------------------------------
+def tool_search_products(user, args):
+    query = args.get('query')
+    if not isinstance(query, str) or not query.strip():
+        return {'error': 'bad_args', 'message': 'query is required'}
+    payload = build_suggestions(query.strip()[:100], limit=6)
+    return {'query': payload['query'], 'results': payload['suggestions']}
+
+
+def tool_get_product_details(user, args):
+    slug = args.get('slug')
+    if not isinstance(slug, str) or not slug.strip():
+        return {'error': 'bad_args', 'message': 'slug is required'}
+    slug = slug.strip()
+    p = Product.objects.filter(slug=slug, is_active=True).select_related('category').first()
+    if p:
+        return _product_public(p, full=True)
+    c = ProductCombo.objects.filter(slug=slug, is_active=True).first()
+    if c:
+        return _combo_public(c, full=True)
+    return {'error': 'not_found', 'message': 'No such product.'}
+
+
+def tool_list_categories(user, args):
+    cats = Category.objects.filter(is_active=True).values_list('name', 'slug')
+    return {'categories': [{'name': n, 'slug': s, 'route': '/products'} for n, s in cats]}
+
+
+def tool_get_policy(user, args):
+    from admin_panel.models import Policy
+    kind = args.get('kind')
+    if kind not in ('shipping', 'return'):
+        return {'error': 'bad_args', 'message': "kind must be 'shipping' or 'return'"}
+    policy = Policy.objects.filter(type=kind).first()
+    if not policy:
+        return {'error': 'not_found', 'message': f'No {kind} policy is published.'}
+    return {'kind': kind, 'content': policy.content[:2000]}
+
+
+_ORDER_NUM = re.compile(r'(\d+)')
+
+
+def tool_get_order_status(user, args):
+    # G1: user-scoped. Anonymous users never reach order data.
+    if user is None or not user.is_authenticated:
+        return LOGIN_REQUIRED
+    raw = str(args.get('order_number', ''))
+    m = _ORDER_NUM.search(raw)
+    if not m:
+        return {'error': 'bad_args', 'message': 'Provide an order number like ORD-000123.'}
+    order_id = int(m.group(1))
+    # Hard filter by the authenticated user — passing someone else's number
+    # returns the same "not found" as a non-existent order (no existence oracle).
+    from orders.models import Order
+    order = Order.objects.filter(id=order_id, user=user).first()
+    if not order:
+        return {'error': 'not_found', 'message': 'No such order on your account.'}
+    return {
+        'order_number': f'ORD-{order.id:06d}',
+        'status': order.status,
+        'payment_status': order.payment_status,
+        'total_amount': float(order.total_amount),
+        'placed_on': order.created_at.strftime('%Y-%m-%d'),
+        'route': '/my-orders',
+    }
+
+
+def tool_get_cart(user, args):
+    # G1: user-scoped.
+    if user is None or not user.is_authenticated:
+        return LOGIN_REQUIRED
+    from cart.models import Cart
+    cart = Cart.objects.filter(user=user).first()
+    if not cart or not cart.items.exists():
+        return {'items': [], 'total': 0.0, 'count': 0}
+    items = []
+    total = Decimal('0')
+    for it in cart.items.select_related('product', 'combo').all():
+        obj = it.product if it.item_type == 'product' else it.combo
+        if obj is None:
+            continue
+        price = obj.final_price if hasattr(obj, 'final_price') else obj.price
+        total += price * it.quantity
+        items.append({'name': obj.name, 'quantity': it.quantity, 'price': float(price)})
+    return {'items': items, 'total': float(total), 'count': len(items)}
+
+
+# How many rows the order/browse/review tools will ever return in one call.
+MAX_LIST_LIMIT = 20
+DEFAULT_LIST_LIMIT = 6
+# Cap on the DB candidate set browse_products scans before in-Python filtering.
+BROWSE_CANDIDATE_CAP = 200
+
+
+def _coerce_limit(args, default=DEFAULT_LIST_LIMIT):
+    try:
+        n = int(args.get('limit', default))
+    except (TypeError, ValueError):
+        n = default
+    return max(1, min(n, MAX_LIST_LIMIT))
+
+
+def tool_list_my_orders(user, args):
+    """The authenticated user's own recent orders. G1: hard-filtered by `user`;
+    there is no argument that could widen the scope to anyone else."""
+    if user is None or not user.is_authenticated:
+        return LOGIN_REQUIRED
+    from orders.models import Order
+    limit = _coerce_limit(args)
+    orders = (Order.objects.filter(user=user)
+              .order_by('-created_at')
+              .prefetch_related('items')[:limit])
+    results = []
+    for o in orders:
+        items = list(o.items.all())
+        results.append({
+            'order_number': _order_number(o),
+            'status': o.status,
+            'payment_status': o.payment_status,
+            'placed_on': o.created_at.strftime('%Y-%m-%d'),
+            'total_amount': float(o.total_amount),
+            'item_count': len(items),
+            'items_preview': [it.product_name for it in items[:3]],
+        })
+    return {'orders': results, 'count': len(results), 'route': '/my-orders'}
+
+
+def tool_get_order_details(user, args):
+    """Line items of ONE of the authenticated user's orders. G1: filtered by
+    `user`; an order number that isn't theirs returns the same 'not_found' as a
+    non-existent one (no existence oracle). Includes product ids/types so the
+    assistant can offer to reorder via add_to_cart."""
+    if user is None or not user.is_authenticated:
+        return LOGIN_REQUIRED
+    raw = str(args.get('order_number', ''))
+    m = _ORDER_NUM.search(raw)
+    if not m:
+        return {'error': 'bad_args', 'message': 'Provide an order number like ORD-000123.'}
+    from orders.models import Order
+    order = (Order.objects.filter(id=int(m.group(1)), user=user)
+             .prefetch_related('items').first())
+    if not order:
+        return {'error': 'not_found', 'message': 'No such order on your account.'}
+    items = []
+    for it in order.items.all():
+        items.append({
+            'name': it.product_name,
+            'item_type': it.item_type,
+            'product_id': it.product_id if it.item_type == 'product' else it.combo_id,
+            'weight': it.product_weight,
+            'quantity': it.quantity,
+            'line_total': float(it.final_price),
+        })
+    return {
+        'order_number': _order_number(order),
+        'status': order.status,
+        'placed_on': order.created_at.strftime('%Y-%m-%d'),
+        'total_amount': float(order.total_amount),
+        'items': items,
+        'route': '/my-orders',
+    }
+
+
+_SPICE_FORMS = {'whole', 'powder', 'crushed', 'mixed'}
+_BROWSE_SORTS = {'price_asc', 'price_desc', 'featured', 'newest'}
+
+
+def _to_decimal(value):
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def tool_browse_products(user, args):
+    """Structured catalogue browse over products (and optionally combos). Public
+    data only (G2). Supports category, price range, spice form, on-offer and
+    in-stock filters, plus sorting. Bounded result set — not an enumeration
+    oracle for anything private (everything here is already publicly listed)."""
+    limit = _coerce_limit(args, default=8)
+
+    category = args.get('category')
+    spice_form = args.get('spice_form')
+    sort = args.get('sort') if args.get('sort') in _BROWSE_SORTS else None
+    min_price = _to_decimal(args.get('min_price')) if args.get('min_price') is not None else None
+    max_price = _to_decimal(args.get('max_price')) if args.get('max_price') is not None else None
+    on_offer = bool(args.get('on_offer')) if args.get('on_offer') is not None else None
+    in_stock = bool(args.get('in_stock')) if args.get('in_stock') is not None else None
+    include_combos = args.get('include_combos', True)
+
+    # ---- Products (DB filters first, then price/offer in Python) ----
+    pq = Product.objects.filter(is_active=True).select_related('category')
+    if isinstance(category, str) and category.strip():
+        c = category.strip()
+        pq = pq.filter(models_q_category(c))
+    if isinstance(spice_form, str) and spice_form.strip().lower() in _SPICE_FORMS:
+        pq = pq.filter(spice_form=spice_form.strip().lower())
+    if in_stock is True:
+        pq = pq.filter(stock__gt=0)
+
+    candidates = list(pq.order_by('-is_featured', '-id')[:BROWSE_CANDIDATE_CAP])
+
+    rows = []
+    for p in candidates:
+        fp = p.final_price
+        if min_price is not None and fp < min_price:
+            continue
+        if max_price is not None and fp > max_price:
+            continue
+        if on_offer is True and not (p.discount_price and p.discount_price < p.price):
+            continue
+        rows.append((p, fp, bool(p.is_featured), p.id))
+
+    # ---- Combos (only when not constrained to a spice/category facet) ----
+    if include_combos and not (category or spice_form) and in_stock is not True:
+        cq = ProductCombo.objects.filter(is_active=True)
+        for c in list(cq.order_by('-is_featured', '-id')[:BROWSE_CANDIDATE_CAP]):
+            fp = c.final_price
+            if min_price is not None and fp < min_price:
+                continue
+            if max_price is not None and fp > max_price:
+                continue
+            if on_offer is True and not (c.discount_price and c.discount_price < c.price):
+                continue
+            rows.append((c, fp, bool(c.is_featured), c.id))
+
+    # ---- Sort ----
+    if sort == 'price_asc':
+        rows.sort(key=lambda r: r[1])
+    elif sort == 'price_desc':
+        rows.sort(key=lambda r: r[1], reverse=True)
+    elif sort == 'newest':
+        rows.sort(key=lambda r: r[3], reverse=True)
+    else:  # featured (default): featured first, then newest
+        rows.sort(key=lambda r: (r[2], r[3]), reverse=True)
+
+    results = []
+    for obj, _fp, _feat, _id in rows[:limit]:
+        results.append(_combo_public(obj) if isinstance(obj, ProductCombo) else _product_public(obj))
+    return {'results': results, 'count': len(results)}
+
+
+def tool_get_product_reviews(user, args):
+    """Public review summary for a product or combo by slug. Exposes only public
+    review fields (rating, comment, reviewer first name, verified flag) — never
+    reviewer email or account details (G2)."""
+    slug = args.get('slug')
+    if not isinstance(slug, str) or not slug.strip():
+        return {'error': 'bad_args', 'message': 'slug is required'}
+    slug = slug.strip()
+    limit = _coerce_limit(args, default=5)
+
+    item = Product.objects.filter(slug=slug, is_active=True).first()
+    if item is None:
+        item = ProductCombo.objects.filter(slug=slug, is_active=True).first()
+    if item is None:
+        return {'error': 'not_found', 'message': 'No such product.'}
+
+    from django.db.models import Avg
+    qs = item.reviews.select_related('user').order_by('-created_at')
+    agg = qs.aggregate(avg=Avg('rating'))
+    count = qs.count()
+    if not count:
+        return {'name': item.name, 'slug': slug, 'review_count': 0,
+                'average_rating': None, 'reviews': []}
+
+    recent = []
+    for r in qs[:limit]:
+        reviewer = (getattr(r.user, 'first_name', '') or '').strip() or 'A customer'
+        recent.append({
+            'rating': r.rating,
+            'title': (r.title or '')[:120],
+            'comment': (r.comment or '')[:300],
+            'reviewer': reviewer,
+            'verified_purchase': bool(r.is_verified_purchase),
+            'date': r.created_at.strftime('%Y-%m-%d'),
+        })
+    return {
+        'name': item.name,
+        'slug': slug,
+        'review_count': count,
+        'average_rating': round(agg['avg'], 1) if agg['avg'] is not None else None,
+        'reviews': recent,
+    }
+
+
+def models_q_category(value):
+    """Match a category by exact slug or case-insensitive name contains."""
+    from django.db.models import Q
+    return Q(category__slug=value) | Q(category__name__icontains=value)
+
+
+# ----------------------------------------------------------------------------
+# PROPOSED ACTIONS (returned to the UI, NEVER executed in the loop — G5)
+# These build a `proposed_action` dict; the actual mutation happens only when
+# the user clicks confirm, through the existing cart/order endpoints.
+# ----------------------------------------------------------------------------
+def build_add_to_cart(user, args):
+    raw_id = args.get('product_id')
+    item_type = args.get('item_type', 'product')
+    try:
+        product_id = int(raw_id)
+    except (TypeError, ValueError):
+        return None, 'I could not identify that product.'
+    if item_type not in ('product', 'combo'):
+        item_type = 'product'
+    try:
+        qty = int(args.get('quantity', 1))
+    except (TypeError, ValueError):
+        qty = 1
+    qty = max(1, min(qty, MAX_PROPOSE_QTY))  # clamp (G5)
+
+    if item_type == 'combo':
+        obj = ProductCombo.objects.filter(id=product_id, is_active=True).first()
+    else:
+        obj = Product.objects.filter(id=product_id, is_active=True).first()
+    if not obj:
+        return None, 'That product is not available.'
+    if item_type == 'product' and obj.stock <= 0:
+        return None, f'{obj.name} is out of stock.'
+
+    action = {
+        'type': 'add_to_cart',
+        'product_id': obj.id,
+        'item_type': item_type,
+        'quantity': qty,
+        'label': f'Add {qty} × {obj.name} to cart',
+    }
+    return action, None
+
+
+def build_checkout(user, args):
+    if user is None or not user.is_authenticated:
+        return {'type': 'navigate', 'route': '/login', 'label': 'Log in to checkout'}, None
+    return {'type': 'checkout', 'route': '/billing', 'label': 'Go to checkout'}, None
+
+
+def build_navigate(user, args):
+    route = _safe_route(args.get('route'))
+    if not route:
+        return None, 'I can only take you to pages on this store.'
+    return {'type': 'navigate', 'route': route, 'label': f'Open {route}'}, None
+
+
+def build_escalate(user, args):
+    reason = args.get('reason', '')
+    if not isinstance(reason, str):
+        reason = ''
+    return {'type': 'escalate_to_human', 'reason': reason[:300],
+            'label': 'Connect me with a human'}, None
+
+
+# ----------------------------------------------------------------------------
+# Registry & dispatch
+# ----------------------------------------------------------------------------
+READ_TOOLS = {
+    'search_products': tool_search_products,
+    'browse_products': tool_browse_products,
+    'get_product_details': tool_get_product_details,
+    'get_product_reviews': tool_get_product_reviews,
+    'list_categories': tool_list_categories,
+    'get_policy': tool_get_policy,
+    'get_order_status': tool_get_order_status,
+    'get_order_details': tool_get_order_details,
+    'list_my_orders': tool_list_my_orders,
+    'get_cart': tool_get_cart,
+}
+
+ACTION_BUILDERS = {
+    'add_to_cart': build_add_to_cart,
+    'checkout': build_checkout,
+    'navigate': build_navigate,
+    'escalate_to_human': build_escalate,
+}
+
+# Names advertised to the model. Anything outside this set is rejected (G3).
+ALL_TOOL_NAMES = set(READ_TOOLS) | set(ACTION_BUILDERS)
+
+
+def run_read_tool(name, user, args):
+    """Execute a read tool by name. Returns an observation dict."""
+    handler = READ_TOOLS.get(name)
+    if handler is None:
+        return {'error': 'unknown_tool', 'message': f'No such tool: {name}'}
+    if not isinstance(args, dict):
+        args = {}
+    try:
+        return handler(user, args)
+    except Exception:
+        logger.exception("Assistant read tool %s failed", name)
+        return {'error': 'tool_error', 'message': 'That lookup failed, please try again.'}
+
+
+def build_action(name, user, args):
+    """Build a proposed_action dict. Returns (action|None, error_message|None)."""
+    builder = ACTION_BUILDERS.get(name)
+    if builder is None:
+        return None, None
+    if not isinstance(args, dict):
+        args = {}
+    try:
+        return builder(user, args)
+    except Exception:
+        logger.exception("Assistant action builder %s failed", name)
+        return None, 'I could not prepare that action.'

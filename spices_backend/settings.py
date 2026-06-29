@@ -16,6 +16,8 @@ USE_X_FORWARDED_HOST = config('USE_X_FORWARDED_HOST', default=False, cast=bool)
 
 # Application definition
 INSTALLED_APPS = [
+    # Must precede django.contrib.admin so translated fields appear in the admin.
+    'modeltranslation',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -30,8 +32,11 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'storages',
+    'cloudinary_storage',
+    'cloudinary',
     'django_filters',
-    
+    'adminsortable2',
+
     # Auth & Social Login
     'allauth',
     'allauth.account',
@@ -48,14 +53,20 @@ INSTALLED_APPS = [
     'payments.apps.PaymentsConfig',
     'reviews.apps.ReviewsConfig',
     'admin_panel.apps.AdminPanelConfig',
-    'support.apps.SupportConfig'
+    'support.apps.SupportConfig',
+    'assistant.apps.AssistantConfig',
+    'analytics.apps.AnalyticsConfig',
 ]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    # Reject manually-banned IPs early (fail-open).
+    'spices_backend.middleware.AbuseGuardMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
+    # Activates ?lang= / X-Language for modeltranslation content.
+    'spices_backend.middleware.LanguageQueryMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -117,13 +128,49 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Internationalization
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'en'
 TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
 USE_TZ = True
 
-# AWS S3 Configuration
+# Languages the storefront content can be translated into. Mirrors the frontend
+# src/i18n SUPPORTED_LANGUAGES and the chat assistant language codes.
+LANGUAGES = [
+    ('en', 'English'),
+    ('hi', 'Hindi'),
+    ('hinglish', 'Hinglish'),
+    ('gu', 'Gujarati'),
+    ('mr', 'Marathi'),
+    ('pa', 'Punjabi'),
+]
+
+# django-modeltranslation: per-language columns for Product/Category content.
+MODELTRANSLATION_DEFAULT_LANGUAGE = 'en'
+MODELTRANSLATION_LANGUAGES = ('en', 'hi', 'hinglish', 'gu', 'mr', 'pa')
+# Any empty translation transparently falls back to English so newly added
+# products (and untranslated fields) always render.
+MODELTRANSLATION_FALLBACK_LANGUAGES = ('en',)
+
+# Media / static storage configuration
+#
+# Media files (product/category/profile images, chat attachments) are served from
+# Cloudinary's image CDN when USE_CLOUDINARY is on (the storefront default), giving
+# fast global delivery. Static files (CSS/JS) continue to use S3 or local storage.
+#
+# Precedence for the `default` (media) storage backend:
+#   USE_CLOUDINARY  ->  Cloudinary   (preferred)
+#   USE_S3          ->  AWS S3
+#   neither         ->  local filesystem
+USE_CLOUDINARY = config('USE_CLOUDINARY', default=True, cast=bool)
 USE_S3 = config('USE_S3', default=False, cast=bool)
+
+if USE_CLOUDINARY:
+    CLOUDINARY_STORAGE = {
+        'CLOUD_NAME': config('CLOUDINARY_CLOUD_NAME'),
+        'API_KEY': config('CLOUDINARY_API_KEY'),
+        'API_SECRET': config('CLOUDINARY_API_SECRET'),
+        'PREFIX': 'ngu',  # namespace all NGU media under the ngu/ folder in Cloudinary
+    }
 
 if USE_S3:
     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
@@ -165,9 +212,27 @@ else:
     MEDIA_URL = '/media/'
     MEDIA_ROOT = BASE_DIR / 'media'
 
-# File Upload Configuration (500MB limit for photos/videos)
-DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
-FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000
+# Cloudinary takes over the `default` (media) storage backend. Static files keep
+# whatever backend the S3/local branch above selected. Because Cloudinary's storage
+# returns absolute res.cloudinary.com URLs, MEDIA_URL is unused for media but is left
+# defined above as a harmless fallback.
+if USE_CLOUDINARY:
+    STORAGES = globals().get('STORAGES', {})
+    STORAGES.setdefault(
+        'staticfiles',
+        {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+    )
+    STORAGES['default'] = {
+        'BACKEND': 'cloudinary_storage.storage.MediaCloudinaryStorage',
+    }
+
+# File Upload Configuration.
+# DATA_UPLOAD_MAX_MEMORY_SIZE caps non-file request bodies (JSON/form fields) held
+# in memory — kept small (10MB) so a malicious oversized JSON payload can't exhaust
+# memory. FILE_UPLOAD_MAX_MEMORY_SIZE only governs the in-memory threshold for
+# uploaded FILES (images/videos stream past it), so large media uploads still work.
+DATA_UPLOAD_MAX_MEMORY_SIZE = config('DATA_UPLOAD_MAX_MEMORY_SIZE', default=10 * 1024 * 1024, cast=int)
+FILE_UPLOAD_MAX_MEMORY_SIZE = config('FILE_UPLOAD_MAX_MEMORY_SIZE', default=524288000, cast=int)
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -215,6 +280,15 @@ REST_FRAMEWORK = {
         'register': '3/minute',  # Registration: 3 per minute
         'contact': '5/hour',     # Contact form: 5 per hour
         'password_reset': '10/day',  # Password reset OTP: 10 per day
+        'assistant': '20/min',   # AI assistant: 20 messages per minute
+        'assistant_day': '500/day',  # AI assistant: hard daily cap (cost guard)
+        'events': '600/hour',    # Behavioral event ingest (batched on client)
+        'anon_events': config('THROTTLE_ANON_EVENTS', default='120/min'),  # Anonymous counter beacons (per-IP)
+        'search_suggest': '60/min',  # Autocomplete: keystroke-friendly but bounded
+        'geocode': '60/hour',    # Reverse-geocode proxy (respects Nominatim policy)
+        'order': config('THROTTLE_ORDER', default='10/min'),           # orders placed per minute
+        'order_day': config('THROTTLE_ORDER_DAY', default='100/day'),  # daily order ceiling
+        'cart_write': config('THROTTLE_CART_WRITE', default='60/min'), # cart mutations / minute
     }
 }
 
@@ -283,6 +357,10 @@ CORS_ALLOWED_ORIGINS = config(
 CORS_ALLOW_ALL_ORIGINS = config('CORS_ALLOW_ALL_ORIGINS', default=False, cast=bool)
 CORS_ALLOW_CREDENTIALS = True
 
+# Allow the storefront's language header (used for modeltranslation content).
+from corsheaders.defaults import default_headers as _cors_default_headers
+CORS_ALLOW_HEADERS = list(_cors_default_headers) + ['x-language']
+
 CORS_ALLOW_METHODS = [
     'GET',
     'POST',
@@ -301,6 +379,22 @@ CSRF_TRUSTED_ORIGINS = config(
 # CSRF Cookie Settings
 CSRF_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = 'Lax'
+
+# -----------------------------------------------------------------------------
+# Auth (JWT) cookie attributes — decoupled from DEBUG so they can be tuned per
+# deployment without code changes.
+#   AUTH_COOKIE_SAMESITE: 'Lax' for same-site (storefront + API on one origin,
+#       the current prod setup). Set to 'None' if the storefront is ever served
+#       from a different registrable domain than the API (cross-site cookies).
+#   AUTH_COOKIE_SECURE: whether the cookie is HTTPS-only. Defaults to "not DEBUG"
+#       but is overridable so DEBUG=False on plain HTTP still works. SameSite=None
+#       legally requires Secure, so it is force-enabled in that case.
+# -----------------------------------------------------------------------------
+AUTH_COOKIE_SAMESITE = config('AUTH_COOKIE_SAMESITE', default='Lax')
+AUTH_COOKIE_SECURE = config('AUTH_COOKIE_SECURE', default=not DEBUG, cast=bool)
+if str(AUTH_COOKIE_SAMESITE).lower() == 'none':
+    # Browsers reject SameSite=None cookies without the Secure attribute.
+    AUTH_COOKIE_SECURE = True
 
 # =============================================================================
 # PRODUCTION SECURITY SETTINGS
@@ -325,9 +419,6 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
 
 # Payment Gateway Settings
-STRIPE_PUBLIC_KEY = config('STRIPE_PUBLIC_KEY', default='')
-STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
-
 RAZORPAY_KEY_ID = config('RAZORPAY_KEY_ID', default='')
 RAZORPAY_KEY_SECRET = config('RAZORPAY_KEY_SECRET', default='')
 
@@ -434,13 +525,11 @@ CACHE_TTL_SHORT = 60          # 1 minute - for frequently changing data
 CACHE_TTL_MEDIUM = 300        # 5 minutes - for product lists
 CACHE_TTL_LONG = 900          # 15 minutes - for categories, static data
 CACHE_TTL_DASHBOARD = 120     # 2 minutes - for dashboard stats
+CACHE_TTL_INSIGHTS = 300      # 5 minutes - for analytics insights endpoints
 
-# Celery Configuration (optional - only if using background tasks)
-# CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
-# CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = TIME_ZONE
+# Coarse IP -> region lookups for anonymous-traffic analytics (MaxMind GeoLite2).
+# Optional: if the .mmdb is absent the analytics module degrades gracefully and
+# simply omits the geo dimension. See analytics/geoip.py and ANALYTICS.md.
+GEOIP_PATH = config('GEOIP_PATH', default=str(BASE_DIR / 'geoip'))
 
 # Triggering auto-reload again to pick up .env changes

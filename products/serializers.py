@@ -1,7 +1,56 @@
 import json
 from rest_framework import serializers
 from django.db.models import Avg, Count
-from .models import Category, Product, ProductImage, ProductCombo, ProductComboItem, ProductSection
+from .models import (
+    Category, Product, ProductImage, ProductCombo, ProductComboItem,
+    ProductSection, ProductVariant,
+)
+
+
+class ProductVariantSerializer(serializers.ModelSerializer):
+    """A single packaging/size of a product (read-only nested view)."""
+    final_price = serializers.ReadOnlyField()
+    discount_percentage = serializers.ReadOnlyField()
+    in_stock = serializers.ReadOnlyField()
+    formatted_weight = serializers.ReadOnlyField()
+
+    class Meta:
+        model = ProductVariant
+        fields = [
+            'id', 'slug', 'weight', 'unit', 'formatted_weight',
+            'price', 'discount_price', 'final_price', 'discount_percentage',
+            'stock', 'in_stock', 'sku', 'is_default', 'is_active', 'display_order',
+        ]
+        read_only_fields = fields
+
+
+class ProductVariantWriteSerializer(serializers.ModelSerializer):
+    """Writable serializer for the /product-variants/ admin CRUD endpoint."""
+    final_price = serializers.ReadOnlyField()
+    discount_percentage = serializers.ReadOnlyField()
+    in_stock = serializers.ReadOnlyField()
+    formatted_weight = serializers.ReadOnlyField()
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = ProductVariant
+        fields = [
+            'id', 'product', 'product_name', 'slug', 'weight', 'unit',
+            'formatted_weight', 'price', 'discount_price', 'final_price',
+            'discount_percentage', 'stock', 'in_stock', 'sku', 'is_default',
+            'is_active', 'display_order',
+        ]
+        read_only_fields = ['slug', 'formatted_weight', 'final_price',
+                            'discount_percentage', 'in_stock', 'product_name']
+
+    def validate(self, data):
+        price = data.get('price', getattr(self.instance, 'price', None))
+        discount = data.get('discount_price', getattr(self.instance, 'discount_price', None))
+        if discount is not None and price is not None and discount >= price:
+            raise serializers.ValidationError({
+                'discount_price': 'Discount price must be less than the regular price.'
+            })
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +71,13 @@ class SectionProductSerializer(serializers.Serializer):
     weight = serializers.SerializerMethodField()
     badge = serializers.SerializerMethodField()
     is_featured = serializers.BooleanField()
+    variant_count = serializers.SerializerMethodField()
+
+    def get_variant_count(self, obj):
+        variants = getattr(obj, 'variants', None)
+        if variants is None:
+            return 0
+        return sum(1 for v in variants.all() if v.is_active)
 
     def get_image(self, obj):
         if not getattr(obj, 'image', None):
@@ -118,12 +174,33 @@ class HomepageSectionSerializer(serializers.Serializer):
         return getattr(obj, 'description', '')
 
     def get_products(self, obj):
-        products_qs = obj.get_products()
+        products = list(obj.get_products())
+        if not products:
+            # No curated placements yet -> fill the row with arbitrary active
+            # products so it's never empty, still capped at the section's
+            # max_products. Rotated by section id so different empty sections
+            # don't all show the same products.
+            products = self._fallback_products(obj)
         return SectionProductSerializer(
-            products_qs,
+            products,
             many=True,
             context=self.context,
         ).data
+
+    def _fallback_products(self, obj):
+        # No .only() — it would defer modeltranslation's per-language columns
+        # and make translated names fall back to English.
+        all_products = list(
+            Product.objects.filter(is_active=True)
+            .select_related('category')
+            .order_by('-is_featured', 'id')
+        )
+        if not all_products:
+            return []
+        limit = obj.max_products or 12
+        start = (obj.id or 0) % len(all_products)
+        rotated = all_products[start:] + all_products[:start]
+        return rotated[:limit]
 
     def get_combos(self, obj):
         combos_qs = obj.get_combos()
@@ -287,25 +364,35 @@ class ProductListSerializer(serializers.ModelSerializer):
     discount_percentage = serializers.ReadOnlyField()
     in_stock = serializers.ReadOnlyField()
     sections = serializers.PrimaryKeyRelatedField(
-        many=True, 
+        many=True,
         queryset=ProductSection.objects.all(),
         required=False
     )
     section_names = serializers.SerializerMethodField(read_only=True)
+    variants = serializers.SerializerMethodField(read_only=True)
+    variant_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'category', 'category_name', 'spice_form',
-            'price', 'discount_price', 'final_price', 'discount_percentage',
+            'price', 'discount_price', 'final_price', 'discount_percentage', 'tax_rate',
             'stock', 'in_stock', 'weight', 'unit', 'organic', 'image', 'thumbnail', 'is_featured',
-            'average_rating', 'reviews_count', 'created_at', 'badge', 'is_active', 
-            'sections', 'section_names'
+            'average_rating', 'reviews_count', 'created_at', 'badge', 'is_active',
+            'sections', 'section_names', 'variants', 'variant_count'
         ]
         read_only_fields = ['slug', 'created_at']
-    
+
     def get_section_names(self, obj):
         return [section.name for section in obj.sections.all()]
+
+    def get_variants(self, obj):
+        variants = [v for v in obj.variants.all() if v.is_active]
+        variants.sort(key=lambda v: (v.display_order, v.weight or 0))
+        return ProductVariantSerializer(variants, many=True).data
+
+    def get_variant_count(self, obj):
+        return sum(1 for v in obj.variants.all() if v.is_active)
     
     def get_average_rating(self, obj):
         """Get average rating using aggregation to avoid N+1 queries"""
@@ -333,26 +420,37 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     discount_percentage = serializers.ReadOnlyField()
     in_stock = serializers.ReadOnlyField()
     sections = serializers.PrimaryKeyRelatedField(
-        many=True, 
+        many=True,
         queryset=ProductSection.objects.all(),
         required=False
     )
     section_names = serializers.SerializerMethodField(read_only=True)
+    variants = serializers.SerializerMethodField(read_only=True)
+    variant_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'slug', 'category', 'category_name', 'description',
             'spice_form', 'price', 'discount_price', 'final_price',
-            'discount_percentage', 'stock', 'in_stock', 'weight', 'unit',
+            'discount_percentage', 'tax_rate', 'stock', 'in_stock', 'weight', 'unit',
             'origin_country', 'organic', 'shelf_life', 'ingredients',
             'image', 'thumbnail', 'images', 'is_featured', 'average_rating',
-            'reviews_count', 'created_at', 'is_active', 'sections', 'section_names'
+            'reviews_count', 'created_at', 'is_active', 'sections', 'section_names',
+            'variants', 'variant_count'
         ]
         read_only_fields = ['slug', 'created_at']
-    
+
     def get_section_names(self, obj):
         return [section.name for section in obj.sections.all()]
+
+    def get_variants(self, obj):
+        variants = [v for v in obj.variants.all() if v.is_active]
+        variants.sort(key=lambda v: (v.display_order, v.weight or 0))
+        return ProductVariantSerializer(variants, many=True).data
+
+    def get_variant_count(self, obj):
+        return sum(1 for v in obj.variants.all() if v.is_active)
     
     def get_average_rating(self, obj):
         """Get average rating using aggregation"""
@@ -422,7 +520,7 @@ class ProductComboSerializer(serializers.ModelSerializer):
         model = ProductCombo
         fields = [
             'id', 'name', 'slug', 'description', 'title', 'subtitle',
-            'display_title', 'price', 'discount_price', 'final_price',
+            'display_title', 'price', 'discount_price', 'final_price', 'tax_rate',
             'discount_percentage', 'total_original_price', 'total_weight',
             'weight', 'unit', 'image', 'thumbnail', 'is_active', 'is_featured', 'badge', 'created_at', 
             'items', 'sections', 'section_names'

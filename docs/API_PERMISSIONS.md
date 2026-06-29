@@ -16,7 +16,7 @@ Complete reference for all API endpoints and their permission requirements.
 
 ---
 
-## 🔓 Public Endpoints (No Authentication)
+## Public Endpoints (No Authentication)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -31,14 +31,22 @@ Complete reference for all API endpoints and their permission requirements.
 | `/api/reviews/` | GET | List reviews |
 | `/api/policies/{type}/` | GET | View shipping/return policy |
 | `/api/spice-forms/` | GET | Spice form options |
+| `/api/search/` | GET | Full-text product/combo search |
+| `/api/search/suggest/` | GET | Search autocomplete suggestions |
+| `/api/assistant/chat/` | POST | AI shopping assistant (anon = Q&A only) |
 | `/api/auth/register/` | POST | User registration |
 | `/api/auth/login/` | POST | User login (JWT) |
 | `/api/auth/token/refresh/` | POST | Refresh JWT token |
+| `/api/auth/google/` | POST | Google OAuth login |
+| `/api/auth/password-reset-request/` | POST | Request password reset |
+| `/api/auth/password-reset-verify/` | POST | Verify reset token |
+| `/api/auth/password-reset-confirm/` | POST | Confirm new password |
 | `/api/contact/` | POST | Submit contact form |
+| `/api/health/` | GET | Service health check |
 
 ---
 
-## 🔐 Authenticated Users
+## Authenticated Users
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -60,20 +68,21 @@ Complete reference for all API endpoints and their permission requirements.
 | `/api/orders/` | POST | Create order |
 | `/api/orders/{id}/` | GET | Order detail |
 | `/api/orders/{id}/cancel/` | POST | Cancel order |
-| `/api/orders/validate_coupon/` | POST | Validate coupon |
-| `/api/validate-coupon/` | POST | Validate coupon (alt) |
+| `/api/auth/validate-coupon/` | POST | Validate coupon |
 | `/api/reviews/` | POST | Create review* |
-| `/api/chat-sessions/` | GET | List user's chat sessions |
-| `/api/chat-sessions/` | POST | Create chat session |
-| `/api/chat-sessions/{id}/` | GET | Session detail |
-| `/api/chat-sessions/{id}/messages/` | GET/POST | Get/send messages |
-| `/api/payment-account/` | GET | Get payment account |
+| `/api/payment-account/` | GET | Get payment account for checkout |
+| `/api/payment-methods/` | GET/POST | List/add saved payment methods |
+| `/api/assistant/chat/` | POST | AI assistant (with cart/order tools) |
+| `/api/assistant/conversations/` | GET/POST | List / create chat threads |
+| `/api/assistant/conversations/{id}/messages/` | GET | Thread message history |
+| `/api/events/` | POST | Ingest behavioral events (view, click, purchase…) |
+| `/api/recommendations/` | GET | Personalized product recommendations |
 
-*Reviews require verified purchase (delivered order containing the product)
+*Reviews require a verified purchase (delivered order containing the product).
 
 ---
 
-## 👑 Admin Only (`is_staff=True`)
+## Admin Only (`is_staff=True`)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -87,10 +96,11 @@ Complete reference for all API endpoints and their permission requirements.
 | `/api/coupons/` | ALL | Manage coupons |
 | `/api/receivable-accounts/` | ALL | Manage payment accounts |
 | `/api/contact/` | GET/PUT/DELETE | Manage contact submissions |
-| `/api/contact/{id}/mark_read/` | POST | Mark as read |
+| `/api/contact/{id}/mark_read/` | POST | Mark submission as read |
 | `/api/contact/{id}/reply/` | POST | Mark as replied |
-| `/api/chat-sessions/{id}/close/` | POST | Close chat session |
-| `/api/chat-sessions/{id}/assign/` | POST | Assign to admin |
+| `/api/assistant/conversations/admin/` | GET | List all chat threads |
+| `/api/assistant/conversations/{id}/admin-reply/` | POST | Reply into a thread as admin |
+| `/api/assistant/conversations/{id}/` | PATCH | Update thread status / assignment |
 | `/api/orders/` | GET (all) | View all orders |
 | `/api/orders/{id}/` | PUT/PATCH | Update order status |
 
@@ -105,17 +115,19 @@ Complete reference for all API endpoints and their permission requirements.
 | `login` | 5/minute | Login endpoint |
 | `register` | 3/minute | Registration endpoint |
 | `contact` | 5/hour | Contact form submission |
+| `assistant` | 20/minute | AI assistant burst |
+| `assistant_day` | 500/day | AI assistant daily cap (cost guard) |
 
 ---
 
 ## Data Access Control (BOLA Protection)
 
 Users can only access their own:
-- **Cart** - One cart per user
-- **Orders** - Only their own orders
-- **Favorites** - Their saved products
-- **Chat Sessions** - Sessions they created
-- **Profile** - Their own profile only
+- **Cart** — One cart per user
+- **Orders** — Only their own orders
+- **Favorites** — Their saved products
+- **Profile** — Their own profile only
+- **Assistant Conversations** — Scoped to user ID or anonymous session ID
 
 Admins (`is_staff=True`) can access all data.
 
@@ -131,21 +143,20 @@ Admins (`is_staff=True`) can access all data.
 - Regular users: Own orders only
 - Admins: All orders (for management)
 
-### Chat Sessions
-- Sessions are linked to specific orders
-- Users can only access sessions for their own orders
-- Admins can access all sessions
+### AI Assistant
+- Anonymous users: product Q&A and navigation only; cart/order tools return a login-required message
+- Authenticated users: full access to cart-query and order-status tools
 
 ---
 
 ## Security Notes
 
-1. **Receivable Accounts** - Admin-only to protect payment collection details
-2. **Dashboard** - Admin-only to protect business metrics
-3. **JWT Tokens** - 1 hour access, 7 day refresh
-4. **Password Hashing** - Django's PBKDF2 with SHA256
-5. **CORS** - Configured for specific origins only
+1. **Receivable Accounts** — Admin-only to protect payment collection details
+2. **Dashboard** — Admin-only to protect business metrics
+3. **JWT Tokens** — 1 hour access, 7 day refresh
+4. **Password Hashing** — Django's PBKDF2 with SHA256
+5. **CORS** — Configured for specific origins only
 
 ---
 
-*Last Updated: December 2024*
+*Last Updated: 2026-06-20*

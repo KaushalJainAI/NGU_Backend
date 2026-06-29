@@ -1,39 +1,90 @@
 # AI Search Engine Integration
 
-The NGU Spices backend leverages Large Language Models (LLMs) to heavily optimize user search queries by automatically generating extensive lists of regional, phonetic, and translated synonyms for every product and combo.
+The NGU Spices backend uses an LLM to generate extensive lists of regional, phonetic, and
+translated synonyms for every product and combo, powering the search autocomplete and
+full-text matching.
 
-This document describes how the AI search engine (`SpiceSearchEngine`) functions natively within Django.
+The search logic lives in `products/recommendations.py`. Corpus building and fuzzy matching are implemented as standalone functions (`build_search_corpus`, `get_search_corpus`, `_score_matches`, `build_suggestions`). `SpiceSearchEngine` is the class that wraps LangChain and handles LLM synonym generation.
 
 ## Architecture
 
-The AI engine lives primarily in `products/recommendations.py`.
-
-1. **Provider:** [Perplexity AI](https://www.perplexity.ai/) (`sonar` model) using their OpenAI-compatible Chat API.
-2. **Framework:** [Langchain](https://python.langchain.com/) for building Prompts and parsing JSON Outputs.
-3. **Storage:** Standard SQL via `ProductSearchKB` and `ProductComboSearchKB` models storing array-like data in PostgreSQL/SQLite `JSONField`s.
-4. **Matching algorithm:** `FuzzyWuzzy` token-set rations for rapid spelling-mistake correction.
+1. **Provider:** Configurable via env vars — `MODEL_PROVIDER` + `LLM_MODEL` + `LLM_API_KEY`.
+   The default production setup uses **OpenRouter** (`minimax/minimax-m2.5`). Any provider
+   supported by LangChain's `init_chat_model` works.
+2. **Framework:** [LangChain](https://python.langchain.com/) (`langchain-core`,
+   `langchain`) for prompts, chat model initialization, and JSON output parsing.
+3. **Storage:** `ProductSearchKB` and `ProductComboSearchKB` models store synonyms in
+   PostgreSQL `JSONField`s (one row per product/combo).
+4. **Matching:** `rapidfuzz` `token_set_ratio` + `WRatio` with entry-kind weighting
+   (`name: 1.0`, `token: 0.95`, `category: 0.9`, `synonym: 0.85`), exact/prefix bonuses,
+   and strict guards for very short queries (1–3 chars) that require prefix or exact matches.
 
 ## The Search Logic
 
-When a user searches for `"haldi"` on the e-commerce frontend:
-1. The backend performs a high-speed fuzzy match (`fuzzywuzzy.process.extract`).
-2. It compares the user query against the `JSONField` arrays of synonyms pre-generated directly by the LLM.
-3. Because the LLM was previously prompted to generate regional Indian variations, "turmeric powder" will instantly match to "haldi", "pasupu", or "manjal".
+When a user searches for `"haldi"` on the storefront:
+
+1. The backend loads the **search corpus** from Redis (key `ngu:search:corpus:v1`,
+   built by `build_search_corpus()`). The corpus contains product/combo names, slugs,
+   name tokens, category names, and the LLM-generated synonyms.
+2. `rapidfuzz` scores every entry with `token_set_ratio` + `WRatio`; entry-kind weights
+   (exact names outrank synonyms) and an exact/prefix bonus shape the final score.
+3. Because the LLM was prompted to generate multilingual Indian variations, `"turmeric
+   powder"` matches `"haldi"`, `"pasupu"`, `"manjal"`, and Hinglish spellings.
+4. **The LLM is optional at query time.** Names/slugs/tokens/categories are always in
+   the corpus; deterministic fallback synonyms are written to the KB when the LLM is
+   unavailable, so search degrades gracefully.
+5. Featured/category recommendations are mixed in only when a query yields fewer than
+   3 direct matches.
+
+## Keeping the KB Fresh
+
+The KB auto-refreshes via `post_save` signals when products/combos/categories are saved
+through Django (entries older than 7 days regenerate in a background thread).
+
+**Important:** direct-SQL catalog changes (e.g. bulk price/description updates) bypass
+Django signals. After any such change run:
+
+```bash
+python manage.py populate_search_kb --force
+```
+
+This regenerates every active product/combo KB entry and invalidates the search cache.
 
 ## Non-Blocking Background Generation
 
-Because generating 25+ permutations via an external LLM API takes several seconds, generating these keys *synchronously* during a Django `post_save` signal would hang the application.
+LLM synonym generation is slow (several seconds per product). To avoid blocking the
+HTTP response, generation runs in a **native Python daemon thread**
+(`products/utils.py → run_in_background`), removing the need for Celery.
 
-To solve this, the generation relies on **native Python background threads** (`products/utils.py -> run_in_background`), circumventing the need for Celery.
+### Flow
 
-### Generation Flow
-1. Admin edits a `Product` in the Django Admin Panel and clicks Save.
-2. The `post_save` signal (`products/signals.py`) fires instantly.
-3. The signal delegates the `a_ensure_search_kb` method to a background daemon thread.
-4. The HTTP response immediately returns (0ms delay for the Admin).
-5. In the background thread, `asyncio` is used to trigger Langchain's `ainvoke()` over the network.
-6. The synonym permutations are received, stored in `ProductSearchKB`, and the background thread explicitly calls `django.db.close_old_connections()` to prevent Postgres connection-pool exhaustion.
+1. Admin saves a `Product` in the Django Admin.
+2. `post_save` signal fires instantly.
+3. Signal delegates `a_ensure_search_kb` to a background thread.
+4. HTTP response returns immediately.
+5. Background thread uses `asyncio` to call LangChain `ainvoke()`.
+6. Synonyms are stored in `ProductSearchKB`; the thread calls
+   `django.db.close_old_connections()` to prevent connection-pool exhaustion.
 
-## Updating the Model
+## Multilingual Support
 
-If you change your Perplexity Account, update the `PERPLEXITY_API_KEY` (or `LLM_API_KEY`) within your `.env` string. The search engine dynamically reads this on initialization.
+The backend stores and returns translated content for Products and Categories via
+`django-modeltranslation`. Language is selected at request time via a `?lang=` query
+parameter or `X-Language` header. Supported languages: `en`, `hi`, `hinglish`, `gu`,
+`mr`, `pa`. The assistant also replies in the user's language.
+
+## Environment Variables
+
+```env
+# Required for synonym generation and the AI assistant
+LLM_API_KEY=sk-or-v1-...         # API key for the LLM provider
+MODEL_PROVIDER=openrouter         # LangChain provider name
+LLM_MODEL=minimax/minimax-m2.5   # Model used for synonym generation
+
+# Optional: separate stronger model for the shopping assistant
+ASSISTANT_MODEL_PROVIDER=openrouter
+ASSISTANT_LLM_MODEL=openai/gpt-4o-mini
+```
+
+If `LLM_API_KEY` is absent, synonym generation falls back to deterministic terms and
+the shopping assistant returns a polite fallback reply — the storefront keeps working.
